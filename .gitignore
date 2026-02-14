@@ -1,0 +1,46 @@
+# Build directories
+build/
+*.build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+.uv/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# Compiled binaries
+fcitx5-voice-ctl
+*.o
+*.a
+
+# Logs
+*.log
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Cache
+.cache/
+*.cache
+
+# Distribution
+dist/
+*.egg-info/

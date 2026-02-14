@@ -29,14 +29,14 @@ echo ""
 echo "==> Building C++ plugin..."
 mkdir -p build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 echo "✓ C++ plugin built"
 
-echo "==> Installing C++ plugin..."
-make install
+echo "==> Installing C++ plugin (requires sudo)..."
+sudo make install
 cd ..
-echo "✓ C++ plugin installed to ~/.local"
+echo "✓ C++ plugin installed to /usr"
 echo ""
 
 # 3. Install systemd service

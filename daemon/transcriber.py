@@ -10,7 +10,7 @@ from scipy.io.wavfile import write
 logger = logging.getLogger(__name__)
 
 # Model configuration
-MODEL_SIZE = "medium"
+MODEL_SIZE = "small"  # Options: tiny (fastest) < base < small < medium
 SAMPLE_RATE = 16000
 
 
@@ -42,7 +42,13 @@ class Transcriber:
 
         try:
             logger.info(f"Transcription started for {audio_file.name}")
-            segments, info = self.model.transcribe(str(audio_file), beam_size=2)
+            # Optimized for speed: beam_size=1, VAD filter enabled
+            segments, info = self.model.transcribe(
+                str(audio_file),
+                beam_size=1,  # Faster inference (was 2)
+                vad_filter=True,  # Skip silence
+                vad_parameters=dict(min_silence_duration_ms=500)
+            )
 
             # Collect all transcription text
             transcription_parts = []

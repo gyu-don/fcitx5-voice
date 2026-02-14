@@ -25,6 +25,9 @@ DBUS_INTERFACE = """
       <arg type='s' name='text'/>
       <arg type='i' name='segment_num'/>
     </signal>
+    <signal name='ProcessingStarted'>
+      <arg type='i' name='segment_num'/>
+    </signal>
     <signal name='RecordingStarted'>
     </signal>
     <signal name='RecordingStopped'>
@@ -90,6 +93,7 @@ class VoiceDaemonService:
 
     # D-Bus signals
     TranscriptionComplete = signal()
+    ProcessingStarted = signal()
     RecordingStarted = signal()
     RecordingStopped = signal()
     Error = signal()
@@ -98,16 +102,24 @@ class VoiceDaemonService:
         """Callback from recorder when audio segment is ready."""
         logger.info(f"Processing audio segment #{segment_num}")
         try:
+            # Emit signal before starting transcription
+            logger.info(f"Emitting ProcessingStarted signal for segment #{segment_num}")
+            self.ProcessingStarted(segment_num)
+
             text = self.transcriber.transcribe(audio_data)
             if text:
                 logger.info(f"Emitting TranscriptionComplete signal: '{text}'")
                 self.TranscriptionComplete(text, segment_num)
             else:
                 logger.warning(f"Segment #{segment_num}: Empty transcription")
+                # Still emit TranscriptionComplete with empty string to decrement processing counter
+                self.TranscriptionComplete("", segment_num)
         except Exception as e:
             error_msg = f"Transcription failed for segment #{segment_num}: {e}"
             logger.error(error_msg)
             self.Error(error_msg)
+            # Emit empty TranscriptionComplete to ensure counter is decremented
+            self.TranscriptionComplete("", segment_num)
 
     def cleanup(self):
         """Clean up resources."""

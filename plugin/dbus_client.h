@@ -13,6 +13,7 @@ namespace fcitx {
 class DBusClient {
 public:
     using TranscriptionCallback = std::function<void(const std::string&, int)>;
+    using ProcessingStartedCallback = std::function<void(int)>;
     using ErrorCallback = std::function<void(const std::string&)>;
 
     DBusClient();
@@ -43,6 +44,11 @@ public:
     void setTranscriptionCallback(TranscriptionCallback cb);
 
     /**
+     * Set callback for processing started.
+     */
+    void setProcessingStartedCallback(ProcessingStartedCallback cb);
+
+    /**
      * Set callback for error events.
      */
     void setErrorCallback(ErrorCallback cb);
@@ -51,6 +57,12 @@ public:
      * Process pending D-Bus messages (call from event loop).
      */
     void processEvents();
+
+    /**
+     * Get the D-Bus connection file descriptor for event loop integration.
+     * @return file descriptor, or -1 if not connected
+     */
+    int getFileDescriptor();
 
     /**
      * Check if connected to daemon.
@@ -68,6 +80,7 @@ private:
 
     DBusConnection* conn_ = nullptr;
     TranscriptionCallback transcription_cb_;
+    ProcessingStartedCallback processing_started_cb_;
     ErrorCallback error_cb_;
     bool connected_ = false;
 };

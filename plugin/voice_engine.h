@@ -35,11 +35,13 @@ private:
     void onError(const std::string& message);
     void showNotification(const std::string& message);
     void clearNotification();
+    void updateStatus();  // Update status based on recording_ and processing_ flags
 
     Instance* instance_;
     std::unique_ptr<DBusClient> dbus_client_;
     std::unique_ptr<EventSource> event_source_;
     bool recording_ = false;
+    int processing_count_ = 0;  // Number of segments currently being processed
 };
 
 class VoiceEngineFactory : public AddonFactory {

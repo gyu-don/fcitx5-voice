@@ -35,18 +35,18 @@ void DBusClient::connect() {
     }
 
     // Add filter for signals
-    dbus_bus_add_match(conn_,
-        "type='signal',interface='org.fcitx.Fcitx5.Voice'",
-        &error);
+    // Note: Don't use sender='org.fcitx.Fcitx5.Voice' because D-Bus matches on unique names (:1.XXX), not well-known names
+    const char* match_rule = "type='signal',interface='org.fcitx.Fcitx5.Voice',path='/org/fcitx/Fcitx5/Voice'";
+    dbus_bus_add_match(conn_, match_rule, &error);
     if (dbus_error_is_set(&error)) {
-        FCITX_WARN() << "Failed to add D-Bus match: " << error.message;
+        FCITX_ERROR() << "Failed to add D-Bus match: " << error.message;
         dbus_error_free(&error);
     }
+    dbus_connection_flush(conn_);
 
     dbus_connection_add_filter(conn_, messageFilter, this, nullptr);
 
     connected_ = true;
-    FCITX_INFO() << "Connected to fcitx5-voice daemon via D-Bus";
 }
 
 void DBusClient::disconnect() {
@@ -63,7 +63,6 @@ void DBusClient::startRecording() {
         throw std::runtime_error("Not connected to D-Bus");
     }
     callMethod("StartRecording");
-    FCITX_INFO() << "Called StartRecording on daemon";
 }
 
 void DBusClient::stopRecording() {
@@ -71,7 +70,6 @@ void DBusClient::stopRecording() {
         throw std::runtime_error("Not connected to D-Bus");
     }
     callMethod("StopRecording");
-    FCITX_INFO() << "Called StopRecording on daemon";
 }
 
 std::string DBusClient::getStatus() {
@@ -118,6 +116,10 @@ void DBusClient::setTranscriptionCallback(TranscriptionCallback cb) {
     transcription_cb_ = std::move(cb);
 }
 
+void DBusClient::setProcessingStartedCallback(ProcessingStartedCallback cb) {
+    processing_started_cb_ = std::move(cb);
+}
+
 void DBusClient::setErrorCallback(ErrorCallback cb) {
     error_cb_ = std::move(cb);
 }
@@ -125,9 +127,28 @@ void DBusClient::setErrorCallback(ErrorCallback cb) {
 void DBusClient::processEvents() {
     if (!conn_) return;
 
-    while (dbus_connection_dispatch(conn_) == DBUS_DISPATCH_DATA_REMAINS) {
-        // Process all pending messages
+    // Read any incoming messages (non-blocking)
+    if (!dbus_connection_read_write(conn_, 0)) {
+        FCITX_WARN() << "D-Bus connection lost";
+        return;
     }
+
+    // Dispatch all pending messages
+    while (dbus_connection_dispatch(conn_) == DBUS_DISPATCH_DATA_REMAINS) {
+        // Keep dispatching
+    }
+}
+
+int DBusClient::getFileDescriptor() {
+    if (!conn_) return -1;
+
+    int fd = -1;
+    if (!dbus_connection_get_unix_fd(conn_, &fd)) {
+        FCITX_WARN() << "Failed to get D-Bus file descriptor";
+        return -1;
+    }
+
+    return fd;
 }
 
 void DBusClient::callMethod(const char* method) {
@@ -168,12 +189,28 @@ void DBusClient::handleMessage(DBusMessage* msg) {
                                  DBUS_TYPE_STRING, &text,
                                  DBUS_TYPE_INT32, &segment_num,
                                  DBUS_TYPE_INVALID)) {
-            FCITX_INFO() << "Received transcription: " << text;
             if (transcription_cb_) {
                 transcription_cb_(text, segment_num);
             }
         } else {
             FCITX_WARN() << "Failed to parse TranscriptionComplete: "
+                        << error.message;
+            dbus_error_free(&error);
+        }
+    } else if (dbus_message_is_signal(msg, DBUS_INTERFACE, "ProcessingStarted")) {
+        int segment_num = 0;
+
+        DBusError error;
+        dbus_error_init(&error);
+
+        if (dbus_message_get_args(msg, &error,
+                                 DBUS_TYPE_INT32, &segment_num,
+                                 DBUS_TYPE_INVALID)) {
+            if (processing_started_cb_) {
+                processing_started_cb_(segment_num);
+            }
+        } else {
+            FCITX_WARN() << "Failed to parse ProcessingStarted: "
                         << error.message;
             dbus_error_free(&error);
         }
@@ -186,7 +223,6 @@ void DBusClient::handleMessage(DBusMessage* msg) {
         if (dbus_message_get_args(msg, &error,
                                  DBUS_TYPE_STRING, &message,
                                  DBUS_TYPE_INVALID)) {
-            FCITX_WARN() << "Daemon error: " << message;
             if (error_cb_) {
                 error_cb_(message);
             }
@@ -200,8 +236,14 @@ DBusHandlerResult DBusClient::messageFilter(DBusConnection* conn,
                                            DBusMessage* msg,
                                            void* user_data) {
     auto* client = static_cast<DBusClient*>(user_data);
-    client->handleMessage(msg);
-    return DBUS_HANDLER_RESULT_HANDLED;
+
+    const char* interface = dbus_message_get_interface(msg);
+    if (interface && std::strcmp(interface, DBUS_INTERFACE) == 0) {
+        client->handleMessage(msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
 } // namespace fcitx
