@@ -2,14 +2,37 @@
 
 Voice input plugin for fcitx5 using OpenAI Whisper speech recognition.
 
+## 特徴
+
+### 良い点
+- 🏠 **ローカルCPUで動作** - プライバシー保護、API費用なし、オフラインでも使える
+- 🌍 **fcitx5統合** - Linuxデスクトップで日本語入力可能な全ての場所で動作
+- 🔓 **オープンソース** - 自由にカスタマイズ可能
+
+### 悪い点
+- 🐌 **処理が遅い** - CPU推論のため、文字起こしに数秒かかる
+- 📉 **精度が低い** - 特に専門用語や固有名詞に弱い
+
+### 向いている用途
+- プライバシーが重要なドキュメント作成
+- オフライン環境での音声入力
+- API費用を払いたくない個人利用
+
+### 向いていない用途
+- リアルタイム性が必要な用途（チャット、コーディングなど）
+- 高精度が必要な専門文書作成
+- 高速な音声入力が必要な場合
+
+より高速・高精度な音声入力が必要な場合は、Google Cloud Speech-to-Text や OpenAI Whisper API などのクラウドサービスの利用を推奨します。
+
 ## Features
 
 - 🎤 **Voice-to-text input** - Speak and have your words transcribed automatically
-- ⌨️ **System-wide hotkey** - Works in any application via Ctrl+Alt+V
+- ⌨️ **Easy hotkey** - Works in any application via Shift+Space
 - 🔇 **Automatic silence detection** - Stops recording after ~1 second of silence
-- 🧠 **Whisper medium model** - Good balance of accuracy and performance
-- 🔄 **Real-time transcription** - Background processing doesn't block input
-- 🏠 **User-local installation** - No sudo required
+- 🧠 **Whisper small model** - Optimized for real-time performance
+- 🔄 **Real-time processing indicator** - Shows recording and processing status independently
+- 📦 **Simple installation** - Install to system with one script
 
 ## Architecture
 
@@ -23,8 +46,9 @@ Voice input plugin for fcitx5 using OpenAI Whisper speech recognition.
 │          fcitx5 Framework                │
 │  ┌──────────────────────────────────┐   │
 │  │  Voice Plugin (C++ .so)          │   │
-│  │  - Registers hotkey (Ctrl+Alt+V) │   │
+│  │  - Registers hotkey (Shift+Space)│   │
 │  │  - Calls D-Bus methods           │   │
+│  │  - Shows processing indicator    │   │
 │  │  - Injects text to InputContext  │   │
 │  └──────────┬───────────────────────┘   │
 └─────────────┼───────────────────────────┘
@@ -33,8 +57,9 @@ Voice input plugin for fcitx5 using OpenAI Whisper speech recognition.
 ┌─────────────┼───────────────────────────┐
 │  Voice Daemon (Python systemd service)  │
 │  - D-Bus service interface               │
-│  - Whisper model (medium size)           │
+│  - Whisper model (small size)            │
 │  - Audio recording + transcription       │
+│  - Emits ProcessingStarted signal        │
 │  - Emits TranscriptionComplete signal    │
 └──────────────────────────────────────────┘
 ```
@@ -69,7 +94,7 @@ cd /home/penguin/prog/fcitx5-voice
 
 The script will:
 1. Install Python dependencies (pydbus, PyGObject, faster-whisper, etc.)
-2. Build and install the C++ fcitx5 plugin to `~/.local/lib/fcitx5/`
+2. Build and install the C++ fcitx5 plugin to `/usr/lib/fcitx5/` (requires sudo)
 3. Install systemd service and start the daemon
 4. Restart fcitx5 to load the plugin
 
@@ -83,10 +108,13 @@ The script will:
 
 ### Basic Voice Input
 
-1. **Start voice input**: Press `Ctrl+Alt+V` in any text field
-2. **Speak**: You'll see "🎤 Recording..." notification
-3. **Auto-complete**: After ~1 second of silence, text will be transcribed and inserted
-4. **Manual stop**: Press `Ctrl+Alt+V` again to stop recording immediately
+1. **Start voice input**: Press `Shift+Space` in any text field
+2. **Speak**: You'll see "🎤 録音中 (Shift+Space で停止)" notification
+3. **Auto-complete**: After ~1 second of silence, transcription will start
+4. **Processing**: You'll see "⏳ 処理中..." while Whisper processes your speech
+5. **Manual stop**: Press `Shift+Space` again to stop recording immediately
+
+**Note**: You can start a new recording while previous audio is still being processed in the background.
 
 ### Tips
 
@@ -99,12 +127,19 @@ The script will:
 
 ### Model Size
 
-Default model is `medium` (~1.5GB memory). To change:
+Default model is `small` (~500MB memory, optimized for speed). To change:
 
 Edit `daemon/transcriber.py`:
 ```python
 MODEL_SIZE = "small"  # Options: tiny, base, small, medium, large-v3-turbo
 ```
+
+**Trade-offs**:
+- `tiny`: Fastest but very poor accuracy
+- `base`: Fast but poor accuracy
+- `small`: Good balance (default) ✓
+- `medium`: Better accuracy but slower (~3-5 seconds per segment)
+- `large-v3-turbo`: Best accuracy but very slow (~10+ seconds per segment)
 
 ### Recording Parameters
 
@@ -126,8 +161,8 @@ systemctl --user restart fcitx5-voice-daemon
 
 Check if the plugin is installed and recognized:
 ```bash
-ls -lh ~/.local/lib/fcitx5/voice.so
-fcitx5-diagnose | grep -i voice
+ls -lh /usr/lib/fcitx5/voice.so
+qdbus org.fcitx.Fcitx5 /addon org.fcitx.Fcitx.AddonManager1.Addons | grep -i voice
 ```
 
 ### Daemon Not Running
@@ -182,9 +217,11 @@ gdbus monitor --session --dest org.fcitx.Fcitx5.Voice
 
 ### High Memory Usage
 
-The Whisper model stays loaded in memory (~1.5GB for medium model). This is normal and provides fast transcription. To reduce memory:
-- Use a smaller model (edit `daemon/transcriber.py`)
-- Restart daemon periodically: `systemctl --user restart fcitx5-voice-daemon`
+The Whisper model stays loaded in memory (~500MB for small model). This is normal and provides fast transcription. To reduce memory:
+- Use a smaller model like `tiny` or `base` (edit `daemon/transcriber.py`)
+- Restart daemon to unload model: `systemctl --user restart fcitx5-voice-daemon`
+
+Note: The trade-off between memory usage and accuracy is significant. The `small` model is the recommended minimum for acceptable Japanese transcription quality.
 
 ## Development
 
@@ -247,10 +284,17 @@ uv run python standalone.py
 
 ## Performance
 
-- **Model loading**: ~3-5 seconds on first startup
-- **Transcription latency**: ~1-3 seconds for 5-second audio (medium model, CPU)
-- **Memory usage**: ~1.5GB (medium model loaded in RAM)
+### Current (small model)
+- **Model loading**: ~2-3 seconds on first startup
+- **Transcription latency**: ~1-2 seconds for 5-second audio (small model, CPU)
+- **Memory usage**: ~500MB (small model loaded in RAM)
 - **CPU usage**: Low when idle, high spike during transcription
+
+### Optimization Tips
+- Use `beam_size=1` for faster inference (already enabled)
+- Enable VAD filtering to skip silent portions (already enabled)
+- Use smaller model (tiny/base) for faster processing
+- Consider GPU acceleration for 5-10x speedup (not implemented yet)
 
 ## Dependencies
 
@@ -270,13 +314,33 @@ uv run python standalone.py
 
 ## License
 
-[Add your license here]
+Apache License 2.0
+
+See [LICENSE](LICENSE) file for details.
 
 ## Credits
 
 - Based on [fcitx5-mozc](https://github.com/fcitx-contrib/fcitx5-mozc) for plugin architecture
 - Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for speech recognition
 - Powered by [OpenAI Whisper](https://github.com/openai/whisper) models
+
+## Known Limitations
+
+### Speed
+- **CPU inference is slow**: 1-2 seconds latency per 5-second audio segment
+- **No GPU acceleration yet**: Would improve speed 5-10x but not implemented
+- **Model loading time**: Takes 2-3 seconds on first use
+
+### Accuracy
+- **Weak on specialized terms**: Technical terms, proper nouns often mistranscribed
+- **Sensitive to audio quality**: Background noise degrades accuracy significantly
+- **No context awareness**: Each segment is transcribed independently
+
+### Workarounds
+- Speak clearly and pause between phrases
+- Use in quiet environments
+- Manually correct errors after insertion
+- Consider using larger models for better accuracy (at cost of speed)
 
 ## Contributing
 
