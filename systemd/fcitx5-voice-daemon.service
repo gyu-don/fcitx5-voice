@@ -1,0 +1,19 @@
+[Unit]
+Description=fcitx5 Voice Input Daemon
+Documentation=https://github.com/user/fcitx5-voice
+
+[Service]
+Type=dbus
+BusName=org.fcitx.Fcitx5.Voice
+ExecStart=%h/.local/bin/fcitx5-voice-daemon
+Restart=on-failure
+RestartSec=5s
+
+# Sandboxing
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

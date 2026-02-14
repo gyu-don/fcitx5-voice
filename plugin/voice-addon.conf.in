@@ -1,0 +1,6 @@
+[Addon]
+Name=Voice Input
+Category=InputMethod
+Library=voice
+Type=SharedLibrary
+OnDemand=True

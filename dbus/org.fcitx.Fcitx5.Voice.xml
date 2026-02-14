@@ -1,0 +1,24 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.fcitx.Fcitx5.Voice">
+    <method name="StartRecording">
+      <annotation name="org.freedesktop.DBus.Method.NoReply" value="false"/>
+    </method>
+    <method name="StopRecording">
+      <annotation name="org.freedesktop.DBus.Method.NoReply" value="false"/>
+    </method>
+    <method name="GetStatus">
+      <arg name="status" type="s" direction="out"/>
+    </method>
+    <signal name="TranscriptionComplete">
+      <arg name="text" type="s"/>
+      <arg name="segment_num" type="i"/>
+    </signal>
+    <signal name="RecordingStarted"/>
+    <signal name="RecordingStopped"/>
+    <signal name="Error">
+      <arg name="message" type="s"/>
+    </signal>
+  </interface>
+</node>

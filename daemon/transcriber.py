@@ -1,0 +1,83 @@
+"""Whisper model wrapper for audio transcription."""
+import logging
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from faster_whisper import WhisperModel
+from scipy.io.wavfile import write
+
+logger = logging.getLogger(__name__)
+
+# Model configuration
+MODEL_SIZE = "medium"
+SAMPLE_RATE = 16000
+
+
+class Transcriber:
+    """Whisper model wrapper for transcribing audio."""
+
+    def __init__(self):
+        """Initialize Whisper model."""
+        logger.info(f"Loading Whisper model: {MODEL_SIZE}")
+        self.model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+        logger.info("Model loaded successfully")
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="fcitx5_voice_"))
+        logger.info(f"Created temporary directory: {self.temp_dir}")
+
+    def transcribe(self, audio_data: np.ndarray) -> str:
+        """
+        Transcribe audio data to text.
+
+        Args:
+            audio_data: Audio samples as float32 numpy array
+
+        Returns:
+            Transcribed text string
+        """
+        # Save audio to temporary file
+        audio_file = self.temp_dir / f"segment_{id(audio_data)}.wav"
+        audio_int16 = (audio_data * 32767).astype(np.int16)
+        write(audio_file, SAMPLE_RATE, audio_int16)
+
+        try:
+            logger.info(f"Transcription started for {audio_file.name}")
+            segments, info = self.model.transcribe(str(audio_file), beam_size=2)
+
+            # Collect all transcription text
+            transcription_parts = []
+            for segment in segments:
+                transcription_parts.append(segment.text.strip())
+
+            transcription_text = " ".join(transcription_parts)
+
+            logger.info(
+                f"Transcription completed - "
+                f"language: {info.language} ({info.language_probability:.2f})"
+            )
+
+            if transcription_text:
+                logger.info(f"Text: {transcription_text}")
+            else:
+                logger.warning("No transcription result")
+
+            return transcription_text
+
+        except Exception as e:
+            logger.error(f"Transcription error: {e}")
+            return ""
+        finally:
+            # Clean up temporary file
+            try:
+                audio_file.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete {audio_file}: {e}")
+
+    def cleanup(self) -> None:
+        """Clean up temporary directory."""
+        if self.temp_dir and self.temp_dir.exists():
+            file_count = len(list(self.temp_dir.glob("*.wav")))
+            for file in self.temp_dir.glob("*.wav"):
+                file.unlink()
+            self.temp_dir.rmdir()
+            logger.info(f"Cleaned up temporary directory: {self.temp_dir} ({file_count} files)")
