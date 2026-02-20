@@ -144,7 +144,14 @@ class RealtimeRecorder:
                 logger.info("Saving remaining audio buffer...")
                 audio_array = np.concatenate(self.audio_buffer)
                 self.segment_count += 1
-                self.on_segment(audio_array, self.segment_count)
+                segment_num = self.segment_count
+
+                # Call in separate thread to avoid blocking the D-Bus main loop
+                threading.Thread(
+                    target=self.on_segment,
+                    args=(audio_array, segment_num),
+                    daemon=True,
+                ).start()
 
                 # Reset buffer
                 self.audio_buffer = []

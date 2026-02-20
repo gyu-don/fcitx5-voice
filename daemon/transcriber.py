@@ -1,6 +1,7 @@
 """Whisper model wrapper for audio transcription."""
 import logging
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -18,12 +19,20 @@ class Transcriber:
     """Whisper model wrapper for transcribing audio."""
 
     def __init__(self):
-        """Initialize Whisper model."""
-        logger.info(f"Loading Whisper model: {MODEL_SIZE}")
-        self.model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
-        logger.info("Model loaded successfully")
+        """Initialize transcriber (model is loaded lazily on first use)."""
+        self.model = None
+        self._model_lock = threading.Lock()
         self.temp_dir = Path(tempfile.mkdtemp(prefix="fcitx5_voice_"))
         logger.info(f"Created temporary directory: {self.temp_dir}")
+
+    def _ensure_model(self):
+        """Load Whisper model if not already loaded (thread-safe)."""
+        if self.model is None:
+            with self._model_lock:
+                if self.model is None:
+                    logger.info(f"Loading Whisper model: {MODEL_SIZE}")
+                    self.model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+                    logger.info("Model loaded successfully")
 
     def transcribe(self, audio_data: np.ndarray) -> str:
         """
@@ -35,6 +44,8 @@ class Transcriber:
         Returns:
             Transcribed text string
         """
+        self._ensure_model()
+
         # Save audio to temporary file
         audio_file = self.temp_dir / f"segment_{id(audio_data)}.wav"
         audio_int16 = (audio_data * 32767).astype(np.int16)
