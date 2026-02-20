@@ -13,6 +13,7 @@ RestartSec=5s
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=%h/.cache/huggingface
 NoNewPrivileges=yes
 
 [Install]
