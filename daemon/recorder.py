@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Recording parameters
 SAMPLE_RATE = 16000
-SILENCE_THRESHOLD = 0.01  # Amplitude threshold for silence detection
+SILENCE_THRESHOLD = 0.03  # Amplitude threshold for silence detection
 SILENCE_DURATION = 1.0  # Seconds of silence before splitting
 MAX_DURATION = 15.0  # Maximum duration per segment in seconds
 
