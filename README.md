@@ -1,102 +1,105 @@
 # fcitx5-voice
 
-Voice input plugin for fcitx5 using OpenAI Whisper speech recognition.
+Voice input plugin for fcitx5 using GPU-accelerated real-time ASR via NVIDIA NIM Riva.
 
-## 特徴
+## Overview
 
-### 良い点
-- 🏠 **ローカルCPUで動作** - プライバシー保護、API費用なし、オフラインでも使える
-- 🌍 **fcitx5統合** - Linuxデスクトップで日本語入力可能な全ての場所で動作
-- 🔓 **オープンソース** - 自由にカスタマイズ可能
+fcitx5-voice captures microphone audio, streams it over WebSocket to an NVIDIA NIM Riva ASR server running on a GPU machine, and injects the transcribed text into any Linux application via fcitx5.
 
-### 悪い点
-- 🐌 **処理が遅い** - CPU推論のため、文字起こしに数秒かかる
-- 📉 **精度が低い** - 特に専門用語や固有名詞に弱い
+### Key features
 
-### 向いている用途
-- プライバシーが重要なドキュメント作成
-- オフライン環境での音声入力
-- API費用を払いたくない個人利用
+- **Real-time streaming** - Audio is streamed continuously; partial results appear inline as you speak
+- **GPU-accelerated** - Leverages NVIDIA NIM Riva on a remote GPU server for fast inference
+- **fcitx5 integration** - Works in any text field on Linux (Wayland/X11)
+- **Preedit display** - Partial (delta) transcription shown as uncommitted text, like IME composition
 
-### 向いていない用途
-- リアルタイム性が必要な用途（チャット、コーディングなど）
-- 高精度が必要な専門文書作成
-- 高速な音声入力が必要な場合
-
-より高速・高精度な音声入力が必要な場合は、Google Cloud Speech-to-Text や OpenAI Whisper API などのクラウドサービスの利用を推奨します。
-
-## Features
-
-- 🎤 **Voice-to-text input** - Speak and have your words transcribed automatically
-- ⌨️ **Easy hotkey** - Works in any application via Shift+Space
-- 🔇 **Automatic silence detection** - Stops recording after ~1 second of silence
-- 🧠 **Whisper small model** - Optimized for real-time performance
-- 🔄 **Real-time processing indicator** - Shows recording and processing status independently
-- 📦 **Simple installation** - Install to system with one script
-
-## Architecture
+### Architecture
 
 ```
 ┌─────────────────────────────────────────┐
 │   User Application (any text field)     │
 └────────────▲────────────────────────────┘
-             │ Text injection
-             │
+             │ commitString(text)
 ┌────────────┴────────────────────────────┐
-│          fcitx5 Framework                │
+│          fcitx5 Framework               │
 │  ┌──────────────────────────────────┐   │
 │  │  Voice Plugin (C++ .so)          │   │
-│  │  - Registers hotkey (Shift+Space)│   │
-│  │  - Calls D-Bus methods           │   │
-│  │  - Shows processing indicator    │   │
-│  │  - Injects text to InputContext  │   │
+│  │  - Hotkey: Shift+Space           │   │
+│  │  - Delta → preedit (inline)      │   │
+│  │  - Completed → commitString      │   │
 │  └──────────┬───────────────────────┘   │
 └─────────────┼───────────────────────────┘
               │ D-Bus IPC
-              │ org.fcitx.Fcitx5.Voice
 ┌─────────────┼───────────────────────────┐
 │  Voice Daemon (Python systemd service)  │
-│  - D-Bus service interface               │
-│  - Whisper model (small size)            │
-│  - Audio recording + transcription       │
-│  - Emits ProcessingStarted signal        │
-│  - Emits TranscriptionComplete signal    │
-└──────────────────────────────────────────┘
+│  - Audio capture (sounddevice, PCM16)   │
+│  - WebSocket streaming to NIM Riva      │
+│  - D-Bus signals: Delta, Completed      │
+└─────────────┼───────────────────────────┘
+              │ WebSocket (ws://)
+┌─────────────┼───────────────────────────┐
+│  NIM Riva ASR Server (GPU machine)      │
+│  - via SSH port forwarding / Tailscale  │
+│  - Model: parakeet-rnnt-1.1b            │
+└─────────────────────────────────────────┘
 ```
+
+## Prerequisites
+
+### Local machine (where you type)
+
+```bash
+# Arch Linux
+sudo pacman -S fcitx5 fcitx5-qt fcitx5-gtk cmake gcc pkgconf dbus python portaudio
+
+# Ubuntu/Debian
+sudo apt install fcitx5 cmake g++ pkg-config libdbus-1-dev python3 libportaudio2
+```
+
+Python 3.13+ with [uv](https://docs.astral.sh/uv/) package manager.
+
+### Remote GPU machine
+
+NVIDIA NIM Riva ASR server running and accessible via:
+- SSH port forwarding: `ssh -L 9000:localhost:9000 gpu-server`
+- Tailscale: direct IP access
+- Any network path that exposes the WebSocket endpoint
 
 ## Installation
 
-### Prerequisites
-
-Install system dependencies (Arch Linux):
-
 ```bash
-sudo pacman -S fcitx5 fcitx5-qt fcitx5-gtk cmake gcc pkgconf dbus python
-```
+# Install Python dependencies
+uv sync
 
-For other distributions, install equivalent packages:
-- `fcitx5` - Input method framework
-- `cmake` - Build system (>= 3.22)
-- `gcc` - C++ compiler with C++20 support
-- `pkgconf` - Package config
-- `dbus` - Message bus system
-- Python 3.13+ with `uv` package manager
-
-### Build and Install
-
-```bash
-# Clone or navigate to the repository
-cd /home/penguin/prog/fcitx5-voice
-
-# Run the installation script
+# Build and install everything
 ./scripts/install.sh
 ```
 
-The script will:
-1. Install Python dependencies (pydbus, PyGObject, faster-whisper, etc.)
-2. Build and install the C++ fcitx5 plugin to `/usr/lib/fcitx5/` (requires sudo)
+The install script will:
+1. Install Python dependencies
+2. Build and install the C++ fcitx5 plugin (requires sudo)
 3. Install systemd service and start the daemon
-4. Restart fcitx5 to load the plugin
+4. Restart fcitx5
+
+### Configure server URL
+
+Edit the systemd service to point to your NIM Riva server:
+
+```bash
+# Edit the service file
+systemctl --user edit fcitx5-voice-daemon
+
+# Override ExecStart with your server URL:
+# [Service]
+# ExecStart=
+# ExecStart=%h/.local/bin/fcitx5-voice-daemon --url ws://your-gpu-server:9000 --language ja-JP
+```
+
+Or run the daemon manually:
+
+```bash
+uv run fcitx5-voice-daemon --url ws://localhost:9000 --language ja-JP --debug
+```
 
 ### Uninstall
 
@@ -106,252 +109,151 @@ The script will:
 
 ## Usage
 
-### Basic Voice Input
-
 1. **Start voice input**: Press `Shift+Space` in any text field
-2. **Speak**: You'll see "🎤 録音中 (Shift+Space で停止)" notification
-3. **Auto-complete**: After ~1 second of silence, transcription will start
-4. **Processing**: You'll see "⏳ 処理中..." while Whisper processes your speech
-5. **Manual stop**: Press `Shift+Space` again to stop recording immediately
-
-**Note**: You can start a new recording while previous audio is still being processed in the background.
+2. **Speak**: Partial transcription appears inline (preedit) as you talk
+3. **Real-time feedback**: Text updates continuously as the server processes audio
+4. **Stop**: Press `Shift+Space` again to stop recording
 
 ### Tips
 
-- Speak clearly and at a normal pace
-- Avoid background noise for better accuracy
-- Maximum recording duration: 15 seconds per segment
-- The first transcription may be slower (model loading)
+- Ensure the NIM Riva server is reachable before starting (e.g., SSH tunnel is up)
+- Speak naturally; the streaming model handles continuous speech
+- The daemon auto-commits audio buffers every ~1 second for processing
 
 ## Configuration
 
-### Model Size
+### Daemon CLI options
 
-Default model is `small` (~500MB memory, optimized for speed). To change:
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url` | `ws://localhost:9000` | NIM Riva WebSocket URL |
+| `--language` | `ja-JP` | Language code |
+| `--model` | `parakeet-rnnt-1.1b-...` | ASR model name |
+| `--commit-interval` | `10` | Commit every N chunks (N * 100ms) |
+| `--debug` | off | Enable debug logging |
 
-Edit `daemon/transcriber.py`:
-```python
-MODEL_SIZE = "small"  # Options: tiny, base, small, medium, large-v3-turbo
-```
+### systemd service
 
-**Trade-offs**:
-- `tiny`: Fastest but very poor accuracy
-- `base`: Fast but poor accuracy
-- `small`: Good balance (default) ✓
-- `medium`: Better accuracy but slower (~3-5 seconds per segment)
-- `large-v3-turbo`: Best accuracy but very slow (~10+ seconds per segment)
+The default service file is at `~/.config/systemd/user/fcitx5-voice-daemon.service`.
 
-### Recording Parameters
-
-Edit `daemon/recorder.py`:
-```python
-SILENCE_THRESHOLD = 0.01   # Lower = more sensitive to silence
-SILENCE_DURATION = 1.0     # Seconds of silence before auto-stop
-MAX_DURATION = 15.0        # Max recording length per segment
-```
-
-After changes, restart the daemon:
 ```bash
-systemctl --user restart fcitx5-voice-daemon
-```
-
-## Troubleshooting
-
-### Plugin Not Loading
-
-Check if the plugin is installed and recognized:
-```bash
-ls -lh /usr/lib/fcitx5/voice.so
-qdbus org.fcitx.Fcitx5 /addon org.fcitx.Fcitx.AddonManager1.Addons | grep -i voice
-```
-
-### Daemon Not Running
-
-Check daemon status:
-```bash
-systemctl --user status fcitx5-voice-daemon
-```
-
-View daemon logs:
-```bash
+# View logs
 journalctl --user -u fcitx5-voice-daemon -f
-```
 
-Restart daemon:
-```bash
+# Restart after config changes
 systemctl --user restart fcitx5-voice-daemon
 ```
-
-### No Microphone Input
-
-Test microphone:
-```bash
-arecord -l  # List audio devices
-arecord -d 5 test.wav  # Record 5 seconds
-aplay test.wav  # Play back
-```
-
-### D-Bus Connection Issues
-
-Test D-Bus connection:
-```bash
-gdbus call --session \
-  --dest org.fcitx.Fcitx5.Voice \
-  --object-path /org/fcitx/Fcitx5/Voice \
-  --method org.fcitx.Fcitx5.Voice.GetStatus
-```
-
-Monitor D-Bus signals:
-```bash
-gdbus monitor --session --dest org.fcitx.Fcitx5.Voice
-```
-
-### Hotkey Not Working
-
-1. Check if fcitx5 is the active input method framework
-2. Check for conflicting keybindings in system settings
-3. Check fcitx5 logs for errors:
-   ```bash
-   journalctl --user -u fcitx5 -f
-   ```
-
-### High Memory Usage
-
-The Whisper model stays loaded in memory (~500MB for small model). This is normal and provides fast transcription. To reduce memory:
-- Use a smaller model like `tiny` or `base` (edit `daemon/transcriber.py`)
-- Restart daemon to unload model: `systemctl --user restart fcitx5-voice-daemon`
-
-Note: The trade-off between memory usage and accuracy is significant. The `small` model is the recommended minimum for acceptable Japanese transcription quality.
 
 ## Development
 
-### Project Structure
+### Project structure
 
 ```
 fcitx5-voice/
 ├── daemon/              # Python voice daemon
-│   ├── __init__.py
-│   ├── main.py          # Entry point
-│   ├── dbus_service.py  # D-Bus interface
-│   ├── recorder.py      # Audio recording
-│   └── transcriber.py   # Whisper transcription
+│   ├── main.py          # Entry point + CLI args
+│   ├── dbus_service.py  # D-Bus service + asyncio bridge
+│   ├── recorder.py      # Streaming audio capture (sounddevice)
+│   └── ws_client.py     # NIM Riva WebSocket client
 ├── plugin/              # C++ fcitx5 plugin
-│   ├── CMakeLists.txt
-│   ├── voice_engine.h/cpp       # Main plugin
-│   ├── dbus_client.h/cpp        # D-Bus communication
-│   ├── voice_engine_factory.cpp # Plugin registration
-│   └── *.conf           # Configuration files
+│   ├── voice_engine.*   # Main plugin (hotkey, preedit, commit)
+│   ├── dbus_client.*    # D-Bus signal handling
+│   └── *.conf           # fcitx5 configuration
 ├── dbus/                # D-Bus interface definition
-│   └── org.fcitx.Fcitx5.Voice.xml
 ├── systemd/             # Systemd service file
-│   └── fcitx5-voice-daemon.service
-└── scripts/             # Installation scripts
-    ├── install.sh
-    └── uninstall.sh
+└── scripts/             # Install/uninstall scripts
 ```
 
-### Testing Daemon Standalone
+### Testing daemon standalone
 
-Run daemon in foreground with debug logging:
 ```bash
-uv run python -m daemon.main --debug
-```
+# Run in foreground with debug logging
+uv run fcitx5-voice-daemon --url ws://localhost:9000 --debug
 
-In another terminal, trigger recording via D-Bus:
-```bash
+# In another terminal, trigger via D-Bus
 gdbus call --session \
   --dest org.fcitx.Fcitx5.Voice \
   --object-path /org/fcitx/Fcitx5/Voice \
   --method org.fcitx.Fcitx5.Voice.StartRecording
+
+# Monitor D-Bus signals
+gdbus monitor --session --dest org.fcitx.Fcitx5.Voice
 ```
 
-### Rebuilding Plugin
+### Rebuilding C++ plugin
 
-After modifying C++ code:
 ```bash
-cd build
-make -j$(nproc)
-make install
+cd build && make -j$(nproc) && sudo make install
 fcitx5 -r  # Restart fcitx5
 ```
 
-### Standalone Voice Input (without fcitx5)
+## Troubleshooting
 
-The original standalone voice input tool is preserved:
+### WebSocket connection fails
+
 ```bash
-uv run python standalone.py
+# Test connectivity
+python3 -c "import websockets, asyncio; asyncio.run(websockets.connect('ws://localhost:9000'))"
+
+# Check SSH tunnel
+ss -tlnp | grep 9000
 ```
 
-## Performance
+### No audio input
 
-### Current (small model)
-- **Model loading**: ~2-3 seconds on first startup
-- **Transcription latency**: ~1-2 seconds for 5-second audio (small model, CPU)
-- **Memory usage**: ~500MB (small model loaded in RAM)
-- **CPU usage**: Low when idle, high spike during transcription
+```bash
+# List audio devices
+python3 -c "import sounddevice; print(sounddevice.query_devices())"
 
-### Optimization Tips
-- Use `beam_size=1` for faster inference (already enabled)
-- Enable VAD filtering to skip silent portions (already enabled)
-- Use smaller model (tiny/base) for faster processing
-- Consider GPU acceleration for 5-10x speedup (not implemented yet)
+# Test recording
+arecord -d 3 test.wav && aplay test.wav
+```
+
+### Plugin not loading
+
+```bash
+ls -lh /usr/lib/fcitx5/voice.so
+qdbus org.fcitx.Fcitx5 /addon org.fcitx.Fcitx.AddonManager1.Addons | grep voice
+```
+
+### Daemon not running
+
+```bash
+systemctl --user status fcitx5-voice-daemon
+journalctl --user -u fcitx5-voice-daemon -f
+```
+
+## D-Bus Interface
+
+Service: `org.fcitx.Fcitx5.Voice`
+
+| Type | Name | Args | Description |
+|------|------|------|-------------|
+| Method | StartRecording | - | Begin audio streaming |
+| Method | StopRecording | - | Stop audio streaming |
+| Method | GetStatus | -> string | "recording" or "idle" |
+| Signal | TranscriptionDelta | text: string | Partial transcription (preedit) |
+| Signal | TranscriptionComplete | text: string, segment_num: int | Final transcription (commit) |
+| Signal | RecordingStarted | - | Recording began |
+| Signal | RecordingStopped | - | Recording ended |
+| Signal | Error | message: string | Error occurred |
 
 ## Dependencies
 
 ### Python
-- `faster-whisper` - Whisper inference engine
-- `sounddevice` - Audio recording
-- `scipy` - Audio file I/O
-- `numpy` - Array processing
+- `websockets` - WebSocket client for NIM Riva
+- `sounddevice` - Audio capture (via PortAudio)
+- `numpy` - Audio buffer handling
 - `pydbus` - D-Bus Python bindings
-- `PyGObject` - GLib/GObject bindings
+- `PyGObject` - GLib main loop
 
 ### System
 - `fcitx5` (>= 5.1.0) - Input method framework
 - `libdbus-1` - D-Bus C library
 - `cmake` (>= 3.22) - Build system
 - GCC with C++20 support
+- PortAudio - Audio I/O library
 
 ## License
 
 Apache License 2.0
-
-See [LICENSE](LICENSE) file for details.
-
-## Credits
-
-- Based on [fcitx5-mozc](https://github.com/fcitx-contrib/fcitx5-mozc) for plugin architecture
-- Uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for speech recognition
-- Powered by [OpenAI Whisper](https://github.com/openai/whisper) models
-
-## Known Limitations
-
-### Speed
-- **CPU inference is slow**: 1-2 seconds latency per 5-second audio segment
-- **No GPU acceleration yet**: Would improve speed 5-10x but not implemented
-- **Model loading time**: Takes 2-3 seconds on first use
-
-### Accuracy
-- **Weak on specialized terms**: Technical terms, proper nouns often mistranscribed
-- **Sensitive to audio quality**: Background noise degrades accuracy significantly
-- **No context awareness**: Each segment is transcribed independently
-
-### Workarounds
-- Speak clearly and pause between phrases
-- Use in quiet environments
-- Manually correct errors after insertion
-- Consider using larger models for better accuracy (at cost of speed)
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-### TODO
-
-- [ ] Add configuration UI for fcitx5-config
-- [ ] Support multiple languages with auto-detection
-- [ ] GPU acceleration support (CUDA/ROCm)
-- [ ] Noise cancellation preprocessing
-- [ ] Punctuation auto-insertion
-- [ ] Voice command mode (editing commands)
-- [ ] Reduce model loading time (lazy loading)

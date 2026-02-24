@@ -4,30 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-fcitx5-voice is a voice input plugin for fcitx5 using OpenAI Whisper speech recognition. It consists of two main components that communicate via D-Bus:
+fcitx5-voice is a voice input plugin for fcitx5 that streams audio to a remote NVIDIA NIM Riva ASR server via WebSocket for real-time GPU-accelerated transcription. It consists of two main components that communicate via D-Bus:
 
-1. **Python Daemon** (`daemon/`) - Background service that handles audio recording and Whisper transcription
-2. **C++ Plugin** (`plugin/`) - fcitx5 InputMethodEngine that provides hotkey integration and text injection
+1. **Python Daemon** (`daemon/`) - Background service that captures audio, streams it via WebSocket to NIM Riva, and forwards transcription results via D-Bus signals
+2. **C++ Plugin** (`plugin/`) - fcitx5 InputMethodEngine that provides hotkey integration, preedit display (delta), and text injection (completed)
 
 ## Architecture
 
 ```
-User presses Ctrl+Alt+V
+User presses Shift+Space
     ↓
 fcitx5 VoiceEngine (C++) catches KeyEvent
     ↓
 D-Bus method call: StartRecording()
     ↓
-Python daemon starts audio capture
+Python daemon starts audio capture + WebSocket connection
     ↓
-Audio processed by Whisper model
+Audio streamed as PCM16 to NIM Riva via WebSocket
     ↓
-D-Bus signal: TranscriptionComplete(text)
+NIM Riva sends back delta (partial) and completed (final) events
     ↓
-C++ plugin receives signal via callback
+D-Bus signals: TranscriptionDelta(text), TranscriptionComplete(text, 0)
     ↓
-ic->commitString(text) injects into application
+C++ plugin: delta → setPreedit (inline), completed → commitString
 ```
+
+### Threading Model
+
+The daemon runs two event loops:
+- **GLib main loop** (main thread): D-Bus service via pydbus
+- **asyncio event loop** (streaming thread): WebSocket + audio coordination
+
+Bridging: asyncio callbacks use `GLib.idle_add()` to emit D-Bus signals from the GLib thread. Stop signaling uses `threading.Event`.
 
 ### D-Bus Interface
 
@@ -35,12 +43,13 @@ Service: `org.fcitx.Fcitx5.Voice`
 Object: `/org/fcitx/Fcitx5/Voice`
 
 **Methods:**
-- `StartRecording()` - Begin audio capture
-- `StopRecording()` - End audio capture
+- `StartRecording()` - Begin audio streaming to ASR server
+- `StopRecording()` - End audio streaming
 - `GetStatus() -> string` - Returns "idle" or "recording"
 
 **Signals:**
-- `TranscriptionComplete(text: string, segment_num: int32)` - Emitted when transcription finishes
+- `TranscriptionDelta(text: string)` - Partial/streaming transcription result (shown as preedit)
+- `TranscriptionComplete(text: string, segment_num: int32)` - Final transcription (committed as text). `segment_num` is always 0 in streaming mode (kept for interface compatibility).
 - `RecordingStarted()` - Recording began
 - `RecordingStopped()` - Recording ended
 - `Error(message: string)` - Error occurred
@@ -51,7 +60,7 @@ Object: `/org/fcitx/Fcitx5/Voice`
 
 ```bash
 # Install system dependencies (Arch Linux)
-sudo pacman -S fcitx5 extra-cmake-modules dbus python
+sudo pacman -S fcitx5 extra-cmake-modules dbus python portaudio
 
 # Install Python dependencies
 uv sync
@@ -65,7 +74,10 @@ uv sync
 **Python daemon only (faster iteration):**
 ```bash
 # Edit daemon/*.py files
-# Restart daemon
+# Run directly with debug logging
+uv run fcitx5-voice-daemon --url ws://localhost:9000 --debug
+
+# Or restart systemd service
 systemctl --user restart fcitx5-voice-daemon
 
 # View logs
@@ -91,7 +103,7 @@ gdbus call --session --dest org.fcitx.Fcitx5.Voice \
   --object-path /org/fcitx/Fcitx5/Voice \
   --method org.fcitx.Fcitx5.Voice.GetStatus
 
-# Monitor signals
+# Monitor signals (see delta and completed events)
 gdbus monitor --session --dest org.fcitx.Fcitx5.Voice
 
 # Trigger recording
@@ -109,22 +121,11 @@ qdbus org.fcitx.Fcitx5 /addon org.fcitx.Fcitx.AddonManager1.Addons | grep -i voi
 fcitx5-remote -a | grep -i voice
 
 # Verify plugin file
-ls -lh ~/.local/lib/fcitx5/voice.so
-nm -D ~/.local/lib/fcitx5/voice.so | grep fcitx_addon_factory
+ls -lh /usr/lib/fcitx5/voice.so
+nm -D /usr/lib/fcitx5/voice.so | grep fcitx_addon_factory
 ```
 
-## Critical Installation Details
-
-### systemd Service Sandboxing
-
-The daemon runs with `ProtectHome=read-only` but needs write access to HuggingFace cache:
-
-```ini
-# In ~/.config/systemd/user/fcitx5-voice-daemon.service
-ReadWritePaths=%h/.cache/huggingface
-```
-
-Without this, the Whisper model download will fail with "Read-only file system" error.
+## Critical Details
 
 ### fcitx5 Plugin Loading
 
@@ -132,20 +133,12 @@ Without this, the Whisper model download will fail with "Read-only file system" 
 
 **Root cause:** fcitx5 searches for addons in system paths (e.g., `/usr/lib/fcitx5`), but `make install` with `~/.local` prefix installs to `~/.local/lib/fcitx5`.
 
-**Solutions:**
-1. **Recommended:** Install to system location (requires sudo):
-   ```bash
-   cd build
-   cmake .. -DCMAKE_INSTALL_PREFIX=/usr
-   sudo make install
-   ```
-
-2. **User-local:** Ensure fcitx5 searches `~/.local`:
-   - Check: `pkg-config --variable=addondir fcitx5`
-   - fcitx5 should automatically search XDG paths, but verify the addon appears in:
-     ```bash
-     qdbus org.fcitx.Fcitx5 /addon org.fcitx.Fcitx.AddonManager1.Addons
-     ```
+**Solution:** Install to system location (requires sudo):
+```bash
+cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+sudo make install
+```
 
 ### KDE Wayland Integration
 
@@ -154,36 +147,49 @@ On KDE Wayland, fcitx5 is managed by KWin:
 - Use `fcitx5 -r` to restart, or configure via System Settings → Virtual Keyboard
 - Set "Fcitx 5" as the virtual keyboard in KDE settings
 
+### D-Bus Signal Reception
+
+**CRITICAL**: D-Bus signals are received via **IOEvent** (file descriptor watching), NOT timer-based polling. The match rule must NOT include `sender=` because D-Bus matches on unique names (`:1.XXX`), not well-known names:
+```cpp
+"type='signal',interface='org.fcitx.Fcitx5.Voice',path='/org/fcitx/Fcitx5/Voice'"
+```
+
 ## Code Architecture
 
 ### Python Daemon (`daemon/`)
 
-**`main.py`**: Entry point, signal handling, GLib main loop setup
-**`dbus_service.py`**: Publishes D-Bus service, coordinates recorder ↔ transcriber
-**`recorder.py`**: Real-time audio capture with silence detection (sounddevice)
-**`transcriber.py`**: Whisper model wrapper (faster-whisper), manages temp files
+**`main.py`**: Entry point, CLI argument parsing (`--url`, `--language`, `--model`, `--commit-interval`, `--debug`), GLib main loop setup
 
-Key flow in `dbus_service.py`:
-1. `StartRecording()` → `recorder.start()` → async audio capture
-2. Recorder detects silence → calls `on_audio_segment(audio_data, segment_num)`
-3. `transcriber.transcribe(audio_data)` → Whisper inference
-4. `TranscriptionComplete` signal emitted with text
+**`dbus_service.py`**: D-Bus service that bridges GLib and asyncio:
+- `StartRecording()` → spawns asyncio streaming thread
+- Streaming thread: connects WebSocket, starts audio capture, runs send/recv tasks
+- `GLib.idle_add()` used to emit D-Bus signals from the asyncio thread
+- `threading.Event` for stop signaling between threads
+
+**`recorder.py`**: Streaming audio recorder using sounddevice:
+- Captures PCM16 (int16) at 16kHz, 100ms chunks
+- Thread-safe queue for audio data
+- No silence detection - continuous streaming
+
+**`ws_client.py`**: NIM Riva WebSocket client:
+- Implements the NIM Riva realtime transcription protocol
+- `connect()` → `conversation.created` → `transcription_session.update`
+- `send_audio()` sends base64-encoded PCM16 chunks
+- `commit()` triggers server-side processing
+- `recv_loop()` dispatches delta and completed events via callbacks
+- Japanese text cleaning: `replace(" ", "")` for space-separated CJK output
 
 ### C++ Plugin (`plugin/`)
 
 **`voice_engine.cpp`**: InputMethodEngineV2 implementation
-- `keyEvent()`: Intercepts `Ctrl+Alt+V` hotkey
-- `onTranscriptionComplete()`: Receives D-Bus signal, calls `ic->commitString(text)`
-- `activate()`/`deactivate()`: Lifecycle hooks
-- **IOEvent integration**: D-Bus file descriptor is registered with fcitx5's event loop using `addIOEvent()`
+- `keyEvent()`: Intercepts `Shift+Space` hotkey
+- `onTranscriptionDelta()`: Accumulates delta text in `preedit_text_`, displays via `setClientPreedit()`
+- `onTranscriptionComplete()`: Clears preedit, calls `ic->commitString(text)`
+- `activate()`/`deactivate()`/`reset()`: Lifecycle hooks, clear preedit state
 
 **`dbus_client.cpp`**: D-Bus wrapper using libdbus-1 (not GDBus)
-- `callMethod()`: Synchronous method calls
-- `messageFilter()`: Static callback for signals
-- `processEvents()`: Dispatches D-Bus messages when FD becomes readable
-- `getFileDescriptor()`: Returns D-Bus connection FD for event loop integration
-
-**CRITICAL**: D-Bus signals are received via **IOEvent** (file descriptor watching), NOT timer-based polling. The match rule must NOT include `sender=` because D-Bus matches on unique names (`:1.XXX`), not well-known names.
+- Handles signals: `TranscriptionComplete`, `TranscriptionDelta`, `ProcessingStarted`, `Error`
+- IOEvent-based signal reception via file descriptor
 
 **`voice_engine_factory.cpp`**: Plugin registration via `FCITX_ADDON_FACTORY_V2` macro
 
@@ -191,61 +197,38 @@ Key flow in `dbus_service.py`:
 
 Root `CMakeLists.txt`:
 - Finds `Fcitx5Core` package
+- C++20 standard
 - Includes Fcitx5 compiler settings
-- Adds `plugin/` subdirectory
 
 `plugin/CMakeLists.txt`:
 - Links against `Fcitx5::Core`, `Fcitx5::Utils`, `dbus-1`
 - Builds as MODULE (not SHARED - no `lib` prefix)
 - Installs to `${CMAKE_INSTALL_LIBDIR}/fcitx5/`
-- Installs configs to `${CMAKE_INSTALL_DATADIR}/fcitx5/{addon,inputmethod}/`
 
-## Configuration Files
+## Configuration
 
-**`plugin/voice.conf`**: Input method metadata
-- Appears in fcitx5 IM selector
-- Icon: `audio-input-microphone`, Label: 🎤
+### Daemon CLI options
 
-**`plugin/voice-addon.conf.in`**: Addon metadata
-- Category: InputMethod
-- Library: `voice` (loads `voice.so`)
-- OnDemand: True (loads when IM is activated)
-
-**`systemd/fcitx5-voice-daemon.service`**: User service
-- Type=dbus, BusName=org.fcitx.Fcitx5.Voice
-- Sandboxed with ProtectHome/ProtectSystem
-
-## Common Modifications
-
-### Change Whisper Model
-
-Edit `daemon/transcriber.py`:
-```python
-MODEL_SIZE = "small"  # Options: tiny, base, small, medium, large-v3-turbo
-```
-Restart daemon: `systemctl --user restart fcitx5-voice-daemon`
-
-### Adjust Recording Sensitivity
-
-Edit `daemon/recorder.py`:
-```python
-SILENCE_THRESHOLD = 0.01   # Lower = more sensitive
-SILENCE_DURATION = 1.0     # Seconds before auto-stop
-MAX_DURATION = 15.0        # Max recording length
-```
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url` | `ws://localhost:9000` | NIM Riva WebSocket URL |
+| `--language` | `ja-JP` | Language code |
+| `--model` | `parakeet-rnnt-1.1b-...` | ASR model name |
+| `--commit-interval` | `10` | Commit every N chunks (N * 100ms) |
+| `--debug` | off | Debug logging |
 
 ### Change Hotkey
 
 Edit `plugin/voice_engine.cpp`:
 ```cpp
-if (event.key().check(FcitxKey_v, KeyState::Ctrl_Alt)) {
+if (event.key().check(FcitxKey_space, KeyState::Shift)) {
 ```
 Change to different key combination, rebuild plugin.
 
 ## Troubleshooting
 
-### Daemon fails with "Read-only file system"
-Add `ReadWritePaths=%h/.cache/huggingface` to systemd service file.
+### WebSocket connection fails
+Ensure SSH tunnel or Tailscale is active. Test: `python3 -c "import websockets, asyncio; asyncio.run(websockets.connect('ws://localhost:9000'))"`
 
 ### Plugin not recognized by fcitx5
 Verify installation path matches fcitx5's search paths. Check `qdbus` addon list.
@@ -256,25 +239,11 @@ Ensure daemon is running: `systemctl --user status fcitx5-voice-daemon`
 ### Hotkey doesn't work
 Verify Voice IM is active (`fcitx5-remote -a`), check for conflicting keybindings.
 
-### D-Bus signals not received (TranscriptionComplete doesn't work)
-**Root cause**: Improper event loop integration or incorrect match rule.
-
-**Solution**: The plugin MUST use `addIOEvent()` to watch the D-Bus file descriptor, NOT timer-based polling. The match rule format is:
-```cpp
-"type='signal',interface='org.fcitx.Fcitx5.Voice',path='/org/fcitx/Fcitx5/Voice'"
-```
-Do NOT include `sender='org.fcitx.Fcitx5.Voice'` because D-Bus match rules match on unique bus names (`:1.495`), not well-known service names.
-
-**Testing**: To isolate fcitx5 integration issues from D-Bus issues, add a test hotkey that directly calls `onTranscriptionComplete()` with test text, bypassing D-Bus.
-
-### High memory usage (~1.5GB)
-Normal - Whisper medium model is loaded in RAM. Use smaller model to reduce.
-
 ## File Locations After Install
 
-- Plugin: `~/.local/lib/fcitx5/voice.so` (or `/usr/lib/fcitx5/voice.so`)
-- Addon config: `~/.local/share/fcitx5/addon/voice.conf`
-- IM config: `~/.local/share/fcitx5/inputmethod/voice.conf`
+- Plugin: `/usr/lib/fcitx5/voice.so`
+- Addon config: `/usr/share/fcitx5/addon/voice.conf`
+- IM config: `/usr/share/fcitx5/inputmethod/voice.conf`
 - Daemon binary: `~/.local/bin/fcitx5-voice-daemon`
 - Systemd service: `~/.config/systemd/user/fcitx5-voice-daemon.service`
-- User profile: `~/.config/fcitx5/profile` (Voice IM registered here)
+- User profile: `~/.config/fcitx5/profile`
