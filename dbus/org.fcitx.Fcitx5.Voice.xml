@@ -15,6 +15,9 @@
       <arg name="text" type="s"/>
       <arg name="segment_num" type="i"/>
     </signal>
+    <signal name="TranscriptionDelta">
+      <arg name="text" type="s"/>
+    </signal>
     <signal name="RecordingStarted"/>
     <signal name="RecordingStopped"/>
     <signal name="Error">
