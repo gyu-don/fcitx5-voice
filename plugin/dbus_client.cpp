@@ -116,6 +116,10 @@ void DBusClient::setTranscriptionCallback(TranscriptionCallback cb) {
     transcription_cb_ = std::move(cb);
 }
 
+void DBusClient::setTranscriptionDeltaCallback(TranscriptionDeltaCallback cb) {
+    transcription_delta_cb_ = std::move(cb);
+}
+
 void DBusClient::setProcessingStartedCallback(ProcessingStartedCallback cb) {
     processing_started_cb_ = std::move(cb);
 }
@@ -194,6 +198,23 @@ void DBusClient::handleMessage(DBusMessage* msg) {
             }
         } else {
             FCITX_WARN() << "Failed to parse TranscriptionComplete: "
+                        << error.message;
+            dbus_error_free(&error);
+        }
+    } else if (dbus_message_is_signal(msg, DBUS_INTERFACE, "TranscriptionDelta")) {
+        const char* text = nullptr;
+
+        DBusError error;
+        dbus_error_init(&error);
+
+        if (dbus_message_get_args(msg, &error,
+                                 DBUS_TYPE_STRING, &text,
+                                 DBUS_TYPE_INVALID)) {
+            if (transcription_delta_cb_) {
+                transcription_delta_cb_(text);
+            }
+        } else {
+            FCITX_WARN() << "Failed to parse TranscriptionDelta: "
                         << error.message;
             dbus_error_free(&error);
         }

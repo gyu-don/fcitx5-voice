@@ -13,6 +13,7 @@ namespace fcitx {
 class DBusClient {
 public:
     using TranscriptionCallback = std::function<void(const std::string&, int)>;
+    using TranscriptionDeltaCallback = std::function<void(const std::string&)>;
     using ProcessingStartedCallback = std::function<void(int)>;
     using ErrorCallback = std::function<void(const std::string&)>;
 
@@ -42,6 +43,11 @@ public:
      * Set callback for transcription completion.
      */
     void setTranscriptionCallback(TranscriptionCallback cb);
+
+    /**
+     * Set callback for transcription delta (partial/streaming result).
+     */
+    void setTranscriptionDeltaCallback(TranscriptionDeltaCallback cb);
 
     /**
      * Set callback for processing started.
@@ -80,6 +86,7 @@ private:
 
     DBusConnection* conn_ = nullptr;
     TranscriptionCallback transcription_cb_;
+    TranscriptionDeltaCallback transcription_delta_cb_;
     ProcessingStartedCallback processing_started_cb_;
     ErrorCallback error_cb_;
     bool connected_ = false;

@@ -16,6 +16,11 @@ VoiceEngine::VoiceEngine(Instance* instance)
             onTranscriptionComplete(text, segment_num);
         });
 
+    dbus_client_->setTranscriptionDeltaCallback(
+        [this](const std::string& text) {
+            onTranscriptionDelta(text);
+        });
+
     dbus_client_->setProcessingStartedCallback(
         [this](int segment_num) {
             processing_count_++;
@@ -60,6 +65,7 @@ void VoiceEngine::deactivate(const InputMethodEntry& entry,
     if (recording_) {
         stopRecording();
     }
+    preedit_text_.clear();
 }
 
 void VoiceEngine::keyEvent(const InputMethodEntry& entry, KeyEvent& event) {
@@ -74,6 +80,7 @@ void VoiceEngine::keyEvent(const InputMethodEntry& entry, KeyEvent& event) {
 
 void VoiceEngine::reset(const InputMethodEntry& entry,
                        InputContextEvent& event) {
+    preedit_text_.clear();
 }
 
 void VoiceEngine::startRecording() {
@@ -109,6 +116,8 @@ void VoiceEngine::stopRecording() {
         FCITX_ERROR() << "Failed to stop recording: " << e.what();
         recording_ = false;
         processing_count_ = 0;
+        preedit_text_.clear();
+        clearPreedit();
         clearNotification();
     }
 }
@@ -121,12 +130,26 @@ void VoiceEngine::toggleRecording() {
     }
 }
 
+void VoiceEngine::onTranscriptionDelta(const std::string& text) {
+    if (text.empty()) {
+        return;
+    }
+
+    // Accumulate delta text and show as preedit
+    preedit_text_ += text;
+    setPreedit(preedit_text_);
+}
+
 void VoiceEngine::onTranscriptionComplete(const std::string& text,
                                          int segment_num) {
     // Decrement processing counter
     if (processing_count_ > 0) {
         processing_count_--;
     }
+
+    // Clear preedit (delta text is replaced by final text)
+    preedit_text_.clear();
+    clearPreedit();
 
     // Don't insert empty text
     if (text.empty()) {
@@ -141,7 +164,7 @@ void VoiceEngine::onTranscriptionComplete(const std::string& text,
         return;
     }
 
-    // Insert transcribed text immediately
+    // Insert final transcribed text
     ic->commitString(text);
     ic->updateUserInterface(UserInterfaceComponent::InputPanel);
 
@@ -174,6 +197,31 @@ void VoiceEngine::clearNotification() {
     }
 
     ic->inputPanel().reset();
+    ic->updateUserInterface(UserInterfaceComponent::InputPanel);
+}
+
+void VoiceEngine::setPreedit(const std::string& text) {
+    auto* ic = instance_->mostRecentInputContext();
+    if (!ic) {
+        return;
+    }
+
+    Text preedit;
+    preedit.append(text);
+    preedit.setCursor(text.length());
+    ic->inputPanel().setClientPreedit(preedit);
+    ic->updatePreedit();
+    ic->updateUserInterface(UserInterfaceComponent::InputPanel);
+}
+
+void VoiceEngine::clearPreedit() {
+    auto* ic = instance_->mostRecentInputContext();
+    if (!ic) {
+        return;
+    }
+
+    ic->inputPanel().setClientPreedit(Text());
+    ic->updatePreedit();
     ic->updateUserInterface(UserInterfaceComponent::InputPanel);
 }
 

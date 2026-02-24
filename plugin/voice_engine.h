@@ -32,9 +32,12 @@ private:
     void stopRecording();
     void toggleRecording();
     void onTranscriptionComplete(const std::string& text, int segment_num);
+    void onTranscriptionDelta(const std::string& text);
     void onError(const std::string& message);
     void showNotification(const std::string& message);
     void clearNotification();
+    void setPreedit(const std::string& text);
+    void clearPreedit();
     void updateStatus();  // Update status based on recording_ and processing_ flags
 
     Instance* instance_;
@@ -42,6 +45,7 @@ private:
     std::unique_ptr<EventSource> event_source_;
     bool recording_ = false;
     int processing_count_ = 0;  // Number of segments currently being processed
+    std::string preedit_text_;  // Accumulated delta text shown as preedit
 };
 
 class VoiceEngineFactory : public AddonFactory {
