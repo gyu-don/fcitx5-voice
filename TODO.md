@@ -26,18 +26,13 @@
 ## Next actions
 
 ### High priority
-- [ ] Test end-to-end on actual hardware with NIM Riva server
-- [ ] Verify preedit (delta) display behavior - does it accumulate correctly? Does it clear properly on completed?
 - [ ] Handle WebSocket reconnection - if the server goes down mid-session, the daemon should recover gracefully
-- [ ] Handle the case where `StopRecording` is called but final transcription hasn't arrived yet - currently we wait 0.5s, may need tuning
 
 ### Medium priority
 - [ ] WebSocket compression (`permessage-deflate`) - test if NIM Riva supports it, add `--compression` flag
-- [ ] Configuration file support - instead of only CLI args, support a config file (e.g., `~/.config/fcitx5-voice/config.toml`)
+- [ ] Configuration file support - instead of only CLI args, support a config file (e.g., `~/.config/fcitx5-voice/config.toml`). Systemd service URL should be templated at that point.
 - [ ] Make the hotkey configurable (currently hardcoded as Shift+Space in C++)
 - [ ] Audio device selection - allow specifying which microphone to use
-- [ ] Clean up install.sh for the new architecture (currently still references Whisper)
-- [ ] Update CLAUDE.md to reflect the new architecture
 
 ### Low priority
 - [ ] Investigate if daemon is necessary at all - could the C++ plugin do WebSocket directly? (libwebsockets exists but adds complexity)
@@ -46,9 +41,7 @@
 - [ ] Visual indicator in system tray (not just fcitx5 panel) for recording state
 - [ ] Auto-start SSH tunnel / Tailscale connection when daemon starts
 - [ ] Punctuation handling - some models output space-separated CJK; current `replace(" ", "")` is a hack
-- [ ] Handle long recording sessions - memory usage of preedit_text_ accumulation
 
 ## Known issues
-- `ProcessingStarted` signal is never emitted in streaming mode (processing_count_ stays 0). The C++ side still has the handler but it's effectively dead code. Consider removing it in a cleanup pass.
 - The `segment_num` parameter in `TranscriptionComplete` is always 0 in streaming mode. It's kept for backward compatibility with the C++ plugin but could be cleaned up.
 - Japanese text cleaning (`replace(" ", "")`) is a blunt instrument - it works for Japanese but would break languages that use spaces. Need per-language handling.

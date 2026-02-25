@@ -26,7 +26,9 @@ NIM Riva sends back delta (partial) and completed (final) events
     ↓
 D-Bus signals: TranscriptionDelta(text), TranscriptionComplete(text, 0)
     ↓
-C++ plugin: delta → setPreedit (inline), completed → commitString
+C++ plugin: delta → setPreedit (replace), completed → commitString
+    ↓
+On stop: pending preedit committed immediately as final text
 ```
 
 ### Threading Model
@@ -44,7 +46,7 @@ Object: `/org/fcitx/Fcitx5/Voice`
 
 **Methods:**
 - `StartRecording()` - Begin audio streaming to ASR server
-- `StopRecording()` - End audio streaming
+- `StopRecording()` - End audio streaming (non-blocking; signals stop and returns immediately, streaming thread cleans up asynchronously)
 - `GetStatus() -> string` - Returns "idle" or "recording"
 
 **Signals:**
@@ -183,12 +185,14 @@ On KDE Wayland, fcitx5 is managed by KWin:
 
 **`voice_engine.cpp`**: InputMethodEngineV2 implementation
 - `keyEvent()`: Intercepts `Shift+Space` hotkey
-- `onTranscriptionDelta()`: Accumulates delta text in `preedit_text_`, displays via `setClientPreedit()`
+- `onTranscriptionDelta()`: Replaces `preedit_text_` with latest delta (server resends full partial text each time), displays via `setClientPreedit()`
 - `onTranscriptionComplete()`: Clears preedit, calls `ic->commitString(text)`
-- `activate()`/`deactivate()`/`reset()`: Lifecycle hooks, clear preedit state
+- `stopRecording()`: Commits any pending preedit text immediately as final text, then signals daemon to stop
+- `activate()`: Shows timed status notification (3s auto-clear)
+- `deactivate()`/`reset()`: Clear preedit state
 
 **`dbus_client.cpp`**: D-Bus wrapper using libdbus-1 (not GDBus)
-- Handles signals: `TranscriptionComplete`, `TranscriptionDelta`, `ProcessingStarted`, `Error`
+- Handles signals: `TranscriptionComplete`, `TranscriptionDelta`, `Error`
 - IOEvent-based signal reception via file descriptor
 
 **`voice_engine_factory.cpp`**: Plugin registration via `FCITX_ADDON_FACTORY_V2` macro
