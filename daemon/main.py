@@ -1,4 +1,5 @@
-"""Main entry point for fcitx5-voice daemon."""
+"""Main entry point for fcitx5-voice daemon (streaming mode)."""
+
 import argparse
 import atexit
 import logging
@@ -8,6 +9,7 @@ import sys
 from gi.repository import GLib
 
 from .dbus_service import start_dbus_service
+from .ws_client import DEFAULT_URL, DEFAULT_MODEL, DEFAULT_LANGUAGE, DEFAULT_COMMIT_INTERVAL
 
 # Global service instance for cleanup
 service = None
@@ -39,14 +41,40 @@ def signal_handler(sig, frame):
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description="fcitx5 Voice Input Daemon")
+    parser = argparse.ArgumentParser(
+        description="fcitx5 Voice Input Daemon (GPU streaming mode)"
+    )
     parser.add_argument(
         "--debug", action="store_true", help="Enable debug logging"
+    )
+    parser.add_argument(
+        "--url",
+        default=DEFAULT_URL,
+        help=f"WebSocket server URL (default: {DEFAULT_URL})",
+    )
+    parser.add_argument(
+        "--language",
+        default=DEFAULT_LANGUAGE,
+        help=f"Language code (default: {DEFAULT_LANGUAGE})",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"ASR model name (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--commit-interval",
+        type=int,
+        default=DEFAULT_COMMIT_INTERVAL,
+        help=(
+            f"Commit audio buffer every N chunks of "
+            f"{100}ms (default: {DEFAULT_COMMIT_INTERVAL})"
+        ),
     )
     args = parser.parse_args()
 
     setup_logging(args.debug)
-    logging.info("Starting fcitx5-voice daemon")
+    logging.info("Starting fcitx5-voice daemon (streaming mode)")
 
     # Register cleanup handlers
     atexit.register(cleanup)
@@ -56,7 +84,12 @@ def main():
     # Start D-Bus service
     global service
     try:
-        service = start_dbus_service()
+        service = start_dbus_service(
+            ws_url=args.url,
+            model=args.model,
+            language=args.language,
+            commit_interval=args.commit_interval,
+        )
     except Exception as e:
         logging.error(f"Failed to start D-Bus service: {e}")
         sys.exit(1)

@@ -1,13 +1,12 @@
 [project]
 name = "fcitx5-voice"
-version = "0.1.0"
-description = "Voice input plugin for fcitx5 using Whisper speech recognition"
+version = "0.2.0"
+description = "Voice input plugin for fcitx5 using GPU-accelerated real-time ASR via NIM Riva"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "faster-whisper>=1.2.1",
+    "websockets>=14.0",
     "sounddevice>=0.5.1",
-    "scipy>=1.15.0",
     "numpy>=2.0.0",
     "pydbus>=0.6.0",
     "PyGObject>=3.42.0",

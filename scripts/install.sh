@@ -62,7 +62,7 @@ echo ""
 
 # 5. Restart fcitx5
 echo "==> Restarting fcitx5..."
-fcitx5 -r
+fcitx5 -rd
 sleep 2
 echo "✓ fcitx5 restarted"
 echo ""
@@ -74,10 +74,10 @@ echo "  fcitx5-voice is now installed and running!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "Usage:"
-echo "  • Press Ctrl+Alt+V in any text field to start voice input"
-echo "  • Speak into your microphone"
-echo "  • Stop speaking (silence will auto-detect and transcribe)"
-echo "  • Text will appear at your cursor position"
+echo "  • Switch to Voice input method in fcitx5"
+echo "  • Press Shift+Space to start recording"
+echo "  • Speak into your microphone (partial text shown as preedit)"
+echo "  • Press Shift+Space again to stop and commit text"
 echo ""
 echo "Troubleshooting:"
 echo "  • Check daemon status:"

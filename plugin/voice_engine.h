@@ -32,16 +32,21 @@ private:
     void stopRecording();
     void toggleRecording();
     void onTranscriptionComplete(const std::string& text, int segment_num);
+    void onTranscriptionDelta(const std::string& text);
     void onError(const std::string& message);
     void showNotification(const std::string& message);
     void clearNotification();
-    void updateStatus();  // Update status based on recording_ and processing_ flags
+    void setPreedit(const std::string& text);
+    void clearPreedit();
+    void updateStatus();
+    void showTimedNotification(const std::string& message, uint64_t duration_ms);
 
     Instance* instance_;
     std::unique_ptr<DBusClient> dbus_client_;
     std::unique_ptr<EventSource> event_source_;
+    std::unique_ptr<EventSource> notification_timer_;
     bool recording_ = false;
-    int processing_count_ = 0;  // Number of segments currently being processed
+    std::string preedit_text_;  // Current delta text shown as preedit (replaced on each delta)
 };
 
 class VoiceEngineFactory : public AddonFactory {

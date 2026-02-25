@@ -1,11 +1,11 @@
 [Unit]
-Description=fcitx5 Voice Input Daemon
+Description=fcitx5 Voice Input Daemon (GPU Streaming)
 Documentation=https://github.com/user/fcitx5-voice
 
 [Service]
 Type=dbus
 BusName=org.fcitx.Fcitx5.Voice
-ExecStart=%h/.local/bin/fcitx5-voice-daemon
+ExecStart=%h/.local/bin/fcitx5-voice-daemon --url ws://localhost:9000 --language ja-JP
 Restart=on-failure
 RestartSec=5s
 
@@ -13,7 +13,6 @@ RestartSec=5s
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.cache/huggingface
 NoNewPrivileges=yes
 
 [Install]
