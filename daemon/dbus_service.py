@@ -78,10 +78,13 @@ class VoiceDaemonService:
             logger.warning("Already recording")
             return
 
-        # Ensure previous streaming thread has finished
+        # Wait briefly for previous streaming thread to finish cleanup
         if self._stream_thread and self._stream_thread.is_alive():
-            logger.warning("Previous streaming thread still running")
-            return
+            self._stream_thread.join(timeout=2)
+            if self._stream_thread.is_alive():
+                logger.error("Previous streaming thread still running")
+                self.Error("前回の録音セッションがまだ終了していません")
+                return
 
         logger.info("D-Bus: StartRecording called")
         self.recording = True
@@ -183,7 +186,8 @@ class VoiceDaemonService:
             for task in done:
                 if task.exception():
                     logger.error(
-                        f"Task error: {task.exception()}", exc_info=True
+                        f"Task error: {task.exception()}",
+                        exc_info=task.exception(),
                     )
 
             # Cancel remaining tasks

@@ -162,8 +162,8 @@ void VoiceEngine::onTranscriptionComplete(const std::string& text,
 
 void VoiceEngine::onError(const std::string& message) {
     FCITX_ERROR() << "Daemon error: " << message;
-    showNotification("❌ " + message);
     recording_ = false;
+    showTimedNotification("❌ " + message, 5000);
 }
 
 void VoiceEngine::showNotification(const std::string& message) {

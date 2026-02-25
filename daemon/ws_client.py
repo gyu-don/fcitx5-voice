@@ -67,7 +67,7 @@ class RivaWSClient:
         ws_url = f"{self.url.rstrip('/')}/v1/realtime?intent=transcription"
         logger.info(f"Connecting to {ws_url}")
 
-        self._ws = await websockets.connect(ws_url)
+        self._ws = await websockets.connect(ws_url, open_timeout=10)
 
         # Wait for conversation.created
         init_msg = await asyncio.wait_for(self._ws.recv(), timeout=5)
