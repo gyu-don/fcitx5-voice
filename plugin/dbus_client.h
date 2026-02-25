@@ -14,7 +14,6 @@ class DBusClient {
 public:
     using TranscriptionCallback = std::function<void(const std::string&, int)>;
     using TranscriptionDeltaCallback = std::function<void(const std::string&)>;
-    using ProcessingStartedCallback = std::function<void(int)>;
     using ErrorCallback = std::function<void(const std::string&)>;
 
     DBusClient();
@@ -50,11 +49,6 @@ public:
     void setTranscriptionDeltaCallback(TranscriptionDeltaCallback cb);
 
     /**
-     * Set callback for processing started.
-     */
-    void setProcessingStartedCallback(ProcessingStartedCallback cb);
-
-    /**
      * Set callback for error events.
      */
     void setErrorCallback(ErrorCallback cb);
@@ -87,7 +81,6 @@ private:
     DBusConnection* conn_ = nullptr;
     TranscriptionCallback transcription_cb_;
     TranscriptionDeltaCallback transcription_delta_cb_;
-    ProcessingStartedCallback processing_started_cb_;
     ErrorCallback error_cb_;
     bool connected_ = false;
 };

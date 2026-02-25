@@ -120,10 +120,6 @@ void DBusClient::setTranscriptionDeltaCallback(TranscriptionDeltaCallback cb) {
     transcription_delta_cb_ = std::move(cb);
 }
 
-void DBusClient::setProcessingStartedCallback(ProcessingStartedCallback cb) {
-    processing_started_cb_ = std::move(cb);
-}
-
 void DBusClient::setErrorCallback(ErrorCallback cb) {
     error_cb_ = std::move(cb);
 }
@@ -215,23 +211,6 @@ void DBusClient::handleMessage(DBusMessage* msg) {
             }
         } else {
             FCITX_WARN() << "Failed to parse TranscriptionDelta: "
-                        << error.message;
-            dbus_error_free(&error);
-        }
-    } else if (dbus_message_is_signal(msg, DBUS_INTERFACE, "ProcessingStarted")) {
-        int segment_num = 0;
-
-        DBusError error;
-        dbus_error_init(&error);
-
-        if (dbus_message_get_args(msg, &error,
-                                 DBUS_TYPE_INT32, &segment_num,
-                                 DBUS_TYPE_INVALID)) {
-            if (processing_started_cb_) {
-                processing_started_cb_(segment_num);
-            }
-        } else {
-            FCITX_WARN() << "Failed to parse ProcessingStarted: "
                         << error.message;
             dbus_error_free(&error);
         }

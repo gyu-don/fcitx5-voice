@@ -38,13 +38,14 @@ private:
     void clearNotification();
     void setPreedit(const std::string& text);
     void clearPreedit();
-    void updateStatus();  // Update status based on recording_ and processing_ flags
+    void updateStatus();
+    void showTimedNotification(const std::string& message, uint64_t duration_ms);
 
     Instance* instance_;
     std::unique_ptr<DBusClient> dbus_client_;
     std::unique_ptr<EventSource> event_source_;
+    std::unique_ptr<EventSource> notification_timer_;
     bool recording_ = false;
-    int processing_count_ = 0;  // Number of segments currently being processed
     std::string preedit_text_;  // Current delta text shown as preedit (replaced on each delta)
 };
 

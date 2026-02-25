@@ -21,12 +21,6 @@ VoiceEngine::VoiceEngine(Instance* instance)
             onTranscriptionDelta(text);
         });
 
-    dbus_client_->setProcessingStartedCallback(
-        [this](int segment_num) {
-            processing_count_++;
-            updateStatus();
-        });
-
     dbus_client_->setErrorCallback(
         [this](const std::string& message) {
             onError(message);
@@ -58,6 +52,7 @@ VoiceEngine::~VoiceEngine() = default;
 
 void VoiceEngine::activate(const InputMethodEntry& entry,
                           InputContextEvent& event) {
+    updateStatus();
 }
 
 void VoiceEngine::deactivate(const InputMethodEntry& entry,
@@ -92,7 +87,6 @@ void VoiceEngine::startRecording() {
     try {
         dbus_client_->startRecording();
         recording_ = true;
-        // Don't clear processing_count_ - previous transcriptions may still be in flight
         updateStatus();
     } catch (const std::exception& e) {
         FCITX_ERROR() << "Failed to start recording: " << e.what();
@@ -123,8 +117,7 @@ void VoiceEngine::stopRecording() {
         FCITX_ERROR() << "Failed to stop recording: " << e.what();
     }
     recording_ = false;
-    processing_count_ = 0;
-    clearNotification();
+    updateStatus();
 }
 
 void VoiceEngine::toggleRecording() {
@@ -147,40 +140,30 @@ void VoiceEngine::onTranscriptionDelta(const std::string& text) {
 
 void VoiceEngine::onTranscriptionComplete(const std::string& text,
                                          int segment_num) {
-    // Decrement processing counter
-    if (processing_count_ > 0) {
-        processing_count_--;
-    }
-
     // Clear preedit (delta text is replaced by final text)
     preedit_text_.clear();
     clearPreedit();
 
     // Don't insert empty text
     if (text.empty()) {
-        updateStatus();
         return;
     }
 
     auto* ic = instance_->mostRecentInputContext();
     if (!ic) {
         FCITX_WARN() << "No active input context";
-        updateStatus();
         return;
     }
 
     // Insert final transcribed text
     ic->commitString(text);
     ic->updateUserInterface(UserInterfaceComponent::InputPanel);
-
-    updateStatus();
 }
 
 void VoiceEngine::onError(const std::string& message) {
     FCITX_ERROR() << "Daemon error: " << message;
     showNotification("❌ " + message);
     recording_ = false;
-    processing_count_ = 0;  // Clear processing count on error
 }
 
 void VoiceEngine::showNotification(const std::string& message) {
@@ -231,22 +214,25 @@ void VoiceEngine::clearPreedit() {
 }
 
 void VoiceEngine::updateStatus() {
-    std::string status;
-    bool processing = (processing_count_ > 0);
-
-    if (recording_ && processing) {
-        status = "🎤 録音中 | ⏳ 処理中";
-    } else if (recording_) {
-        status = "🎤 録音中 (Shift+Space で停止)";
-    } else if (processing) {
-        status = "⏳ 処理中...";
+    if (recording_) {
+        notification_timer_.reset();
+        showNotification("🎤 録音中 (Shift+Space で停止)");
     } else {
-        // Idle - clear notification
-        clearNotification();
-        return;
+        showTimedNotification("🎤 停止中 (Shift+Space で開始)", 3000);
     }
+}
 
-    showNotification(status);
+void VoiceEngine::showTimedNotification(const std::string& message,
+                                        uint64_t duration_ms) {
+    showNotification(message);
+    notification_timer_ = instance_->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC,
+        now(CLOCK_MONOTONIC) + duration_ms * 1000,
+        0,
+        [this](EventSourceTime*, uint64_t) {
+            clearNotification();
+            return true;
+        });
 }
 
 } // namespace fcitx
