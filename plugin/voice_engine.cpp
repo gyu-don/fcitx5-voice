@@ -107,19 +107,24 @@ void VoiceEngine::stopRecording() {
         return;
     }
 
-    try {
-        dbus_client_->stopRecording();
-        recording_ = false;
-        // Don't manually set processing - ProcessingStarted signals will increment the counter
-        updateStatus();
-    } catch (const std::exception& e) {
-        FCITX_ERROR() << "Failed to stop recording: " << e.what();
-        recording_ = false;
-        processing_count_ = 0;
+    // Commit any pending preedit text immediately
+    if (!preedit_text_.empty()) {
+        auto* ic = instance_->mostRecentInputContext();
+        if (ic) {
+            ic->commitString(preedit_text_);
+        }
         preedit_text_.clear();
         clearPreedit();
-        clearNotification();
     }
+
+    try {
+        dbus_client_->stopRecording();
+    } catch (const std::exception& e) {
+        FCITX_ERROR() << "Failed to stop recording: " << e.what();
+    }
+    recording_ = false;
+    processing_count_ = 0;
+    clearNotification();
 }
 
 void VoiceEngine::toggleRecording() {
@@ -135,8 +140,8 @@ void VoiceEngine::onTranscriptionDelta(const std::string& text) {
         return;
     }
 
-    // Accumulate delta text and show as preedit
-    preedit_text_ += text;
+    // Replace preedit with latest delta (server resends full partial text each time)
+    preedit_text_ = text;
     setPreedit(preedit_text_);
 }
 

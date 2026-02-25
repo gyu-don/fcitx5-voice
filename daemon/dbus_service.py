@@ -78,20 +78,31 @@ class VoiceDaemonService:
             logger.warning("Already recording")
             return
 
+        # Ensure previous streaming thread has finished
+        if self._stream_thread and self._stream_thread.is_alive():
+            logger.warning("Previous streaming thread still running")
+            return
+
         logger.info("D-Bus: StartRecording called")
         self.recording = True
         self.RecordingStarted()
         self._start_streaming()
 
     def StopRecording(self):
-        """Stop streaming audio (D-Bus method)."""
+        """Stop streaming audio (D-Bus method).
+
+        Signals the streaming thread to stop and returns immediately.
+        The thread handles final commit, waits for server responses,
+        and cleans up on its own.
+        """
         if not self.recording:
             logger.warning("Not recording")
             return
 
         logger.info("D-Bus: StopRecording called")
         self.recording = False
-        self._stop_streaming()
+        if self._stop_event:
+            self._stop_event.set()
         self.RecordingStopped()
 
     def GetStatus(self) -> str:
@@ -120,7 +131,7 @@ class VoiceDaemonService:
         if self._stop_event:
             self._stop_event.set()
         if self._stream_thread:
-            self._stream_thread.join(timeout=5)
+            self._stream_thread.join(timeout=15)
             if self._stream_thread.is_alive():
                 logger.warning("Streaming thread did not stop in time")
             self._stream_thread = None
@@ -214,19 +225,16 @@ class VoiceDaemonService:
             await client.commit()
             logger.info("Sent final audio commit")
 
-        # Brief wait to allow server to send final transcription
-        await asyncio.sleep(0.5)
-
     def _emit_delta(self, text: str) -> bool:
         """Emit TranscriptionDelta signal (called via GLib.idle_add)."""
-        logger.debug(f"Delta: {text}")
+        logger.debug(f"Delta: {len(text)} chars")
         self.TranscriptionDelta(text)
         return False  # Don't repeat
 
     def _emit_completed(self, text: str) -> bool:
         """Emit TranscriptionComplete signal (called via GLib.idle_add)."""
         if text:
-            logger.info(f"Completed: {text}")
+            logger.info(f"Completed: {len(text)} chars")
         self.TranscriptionComplete(text, 0)
         return False  # Don't repeat
 

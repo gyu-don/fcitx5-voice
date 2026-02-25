@@ -142,8 +142,9 @@ class RivaWSClient:
 
             if ev_type == "conversation.item.input_audio_transcription.delta":
                 delta = _clean_text(event.get("delta", ""), self.language)
-                if delta and self.on_delta:
-                    self.on_delta(delta)
+                if delta:
+                    if self.on_delta:
+                        self.on_delta(delta)
 
             elif ev_type == "conversation.item.input_audio_transcription.completed":
                 transcript = _clean_text(

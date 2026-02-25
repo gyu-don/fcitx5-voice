@@ -45,7 +45,7 @@ private:
     std::unique_ptr<EventSource> event_source_;
     bool recording_ = false;
     int processing_count_ = 0;  // Number of segments currently being processed
-    std::string preedit_text_;  // Accumulated delta text shown as preedit
+    std::string preedit_text_;  // Current delta text shown as preedit (replaced on each delta)
 };
 
 class VoiceEngineFactory : public AddonFactory {
