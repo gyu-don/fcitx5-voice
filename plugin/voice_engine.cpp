@@ -155,7 +155,6 @@ void VoiceEngine::onTranscriptionComplete(const std::string& text,
         return;
     }
 
-    // Insert final transcribed text
     ic->commitString(text);
     ic->updateUserInterface(UserInterfaceComponent::InputPanel);
 }
@@ -218,7 +217,7 @@ void VoiceEngine::updateStatus() {
         notification_timer_.reset();
         showNotification("🎤 録音中 (Shift+Space で停止)");
     } else {
-        showTimedNotification("🎤 停止中 (Shift+Space で開始)", 3000);
+        showTimedNotification("🎤 停止中 (Shift+Space で開始)", 2000);
     }
 }
 
