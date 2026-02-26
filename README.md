@@ -60,9 +60,35 @@ Python 3.13+ with [uv](https://docs.astral.sh/uv/) package manager.
 
 ### Remote GPU machine
 
-NVIDIA NIM Riva ASR server running and accessible via:
+NVIDIA GPU with NIM Riva ASR server. Requires [NGC API key](https://org.ngc.nvidia.com/).
+
+**Start the NIM Riva container:**
+
+```bash
+export NGC_API_KEY="your-ngc-api-key"
+export LOCAL_NIM_CACHE=~/.cache/nim
+mkdir -p "$LOCAL_NIM_CACHE"
+
+export CONTAINER_ID="parakeet-1-1b-rnnt-multilingual:1.4.0"
+docker run -it --rm \
+  --runtime=nvidia \
+  --gpus '"device=0"' \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -e NIM_HTTP_API_PORT=9000 \
+  -e NGC_API_KEY=$NGC_API_KEY \
+  -e NIM_GRPC_API_PORT=50051 \
+  -e NIM_MANIFEST_PROFILE=5d0a7d1aa03f88aeb67c36d0f7955bbbe7ed6e163037dd93d935bf148b2d684d \
+  -p 9000:9000 \
+  -p 50051:50051 \
+  -v "$LOCAL_NIM_CACHE":/opt/nim/.cache \
+  nvcr.io/nim/nvidia/$CONTAINER_ID
+```
+
+**Access from local machine via:**
 - SSH port forwarding: `ssh -L 9000:localhost:9000 gpu-server`
-- Tailscale: direct IP access
+- Tailscale: Tailscale domain access
 - Any network path that exposes the WebSocket endpoint
 
 ## Installation
