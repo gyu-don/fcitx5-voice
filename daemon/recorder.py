@@ -64,6 +64,22 @@ class StreamingRecorder:
         except queue.Empty:
             return None
 
+    def drain(self) -> None:
+        """Discard all queued audio chunks.
+
+        Used during WebSocket reconnection to drop stale audio data
+        that accumulated while disconnected.
+        """
+        drained = 0
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+                drained += 1
+            except queue.Empty:
+                break
+        if drained:
+            logger.debug(f"Drained {drained} stale chunks from queue")
+
     def stop(self) -> None:
         """Stop audio capture and drain the queue."""
         if self._stream is None:

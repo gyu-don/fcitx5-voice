@@ -1,6 +1,7 @@
 """Main entry point for fcitx5-voice daemon (streaming mode)."""
 
 import argparse
+from argparse import BooleanOptionalAction
 import atexit
 import logging
 import signal
@@ -71,6 +72,12 @@ def main():
             f"{100}ms (default: {DEFAULT_COMMIT_INTERVAL})"
         ),
     )
+    parser.add_argument(
+        "--compression",
+        action=BooleanOptionalAction,
+        default=True,
+        help="Enable WebSocket compression (permessage-deflate). Use --no-compression to disable.",
+    )
     args = parser.parse_args()
 
     setup_logging(args.debug)
@@ -89,6 +96,7 @@ def main():
             model=args.model,
             language=args.language,
             commit_interval=args.commit_interval,
+            compression="deflate" if args.compression else None,
         )
     except Exception as e:
         logging.error(f"Failed to start D-Bus service: {e}")

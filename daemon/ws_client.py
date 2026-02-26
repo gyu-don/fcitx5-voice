@@ -50,6 +50,7 @@ class RivaWSClient:
         url: str = DEFAULT_URL,
         model: str = DEFAULT_MODEL,
         language: str = DEFAULT_LANGUAGE,
+        compression: str | None = "deflate",
         on_delta: Callable[[str], None] | None = None,
         on_completed: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
@@ -57,6 +58,7 @@ class RivaWSClient:
         self.url = url
         self.model = model
         self.language = language
+        self.compression = compression
         self.on_delta = on_delta
         self.on_completed = on_completed
         self.on_error = on_error
@@ -67,7 +69,10 @@ class RivaWSClient:
         ws_url = f"{self.url.rstrip('/')}/v1/realtime?intent=transcription"
         logger.info(f"Connecting to {ws_url}")
 
-        self._ws = await websockets.connect(ws_url, open_timeout=10)
+        logger.debug(f"WebSocket compression: {self.compression}")
+        self._ws = await websockets.connect(
+            ws_url, compression=self.compression, open_timeout=10
+        )
 
         # Wait for conversation.created
         init_msg = await asyncio.wait_for(self._ws.recv(), timeout=5)

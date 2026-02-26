@@ -58,18 +58,21 @@ class VoiceDaemonService:
         model: str,
         language: str,
         commit_interval: int = DEFAULT_COMMIT_INTERVAL,
+        compression: str | None = "deflate",
     ):
         logger.info("Initializing voice daemon service (streaming mode)")
         self.ws_url = ws_url
         self.model = model
         self.language = language
         self.commit_interval = commit_interval
+        self.compression = compression
         self.recording = False
         self._stop_event: threading.Event | None = None
         self._stream_thread: threading.Thread | None = None
         logger.info(
             f"Config: url={ws_url}, model={model}, "
-            f"language={language}, commit_interval={commit_interval}"
+            f"language={language}, commit_interval={commit_interval}, "
+            f"compression={compression}"
         )
 
     def StartRecording(self):
@@ -152,58 +155,90 @@ class VoiceDaemonService:
             loop.close()
 
     async def _stream(self):
-        """Main streaming coroutine: connect, capture, send, receive."""
+        """Main streaming coroutine with automatic reconnection.
+
+        The recorder runs continuously outside the reconnection loop.
+        On connection failure, stale audio is drained and reconnection
+        is attempted with exponential backoff.
+        """
         recorder = StreamingRecorder()
-        client = RivaWSClient(
-            url=self.ws_url,
-            model=self.model,
-            language=self.language,
-            on_delta=lambda text: GLib.idle_add(
-                self._emit_delta, text
-            ),
-            on_completed=lambda text: GLib.idle_add(
-                self._emit_completed, text
-            ),
-            on_error=lambda msg: GLib.idle_add(self._emit_error, msg),
-        )
+        recorder.start()
 
         try:
-            await client.connect()
-            recorder.start()
+            backoff = 1.0
+            while not self._stop_event.is_set():
+                client = RivaWSClient(
+                    url=self.ws_url,
+                    model=self.model,
+                    language=self.language,
+                    compression=self.compression,
+                    on_delta=lambda text: GLib.idle_add(
+                        self._emit_delta, text
+                    ),
+                    on_completed=lambda text: GLib.idle_add(
+                        self._emit_completed, text
+                    ),
+                    on_error=lambda msg: GLib.idle_add(
+                        self._emit_error, msg
+                    ),
+                )
+                try:
+                    await client.connect()
+                    backoff = 1.0  # Reset on successful connection
+                    recorder.drain()  # Discard stale audio from reconnect gap
 
-            send_task = asyncio.create_task(
-                self._send_audio_loop(client, recorder)
-            )
-            recv_task = asyncio.create_task(client.recv_loop())
+                    send_task = asyncio.create_task(
+                        self._send_audio_loop(client, recorder)
+                    )
+                    recv_task = asyncio.create_task(client.recv_loop())
 
-            # Wait for either task to finish (send_audio_loop exits on stop)
-            done, pending = await asyncio.wait(
-                [send_task, recv_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            # Check for exceptions in completed tasks
-            for task in done:
-                if task.exception():
-                    logger.error(
-                        f"Task error: {task.exception()}",
-                        exc_info=task.exception(),
+                    done, pending = await asyncio.wait(
+                        [send_task, recv_task],
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
 
-            # Cancel remaining tasks
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                    # Check for exceptions in completed tasks
+                    for task in done:
+                        if task.exception():
+                            raise task.exception()
 
-        except Exception as e:
-            logger.error(f"Stream setup error: {e}", exc_info=True)
-            GLib.idle_add(self._emit_error, str(e))
+                    # If stop was requested, exit cleanly
+                    if self._stop_event.is_set():
+                        for task in pending:
+                            task.cancel()
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
+                        break
+
+                    # Unexpected termination — fall through to reconnect
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    raise RuntimeError("Connection lost unexpectedly")
+
+                except Exception as e:
+                    await client.close()
+                    if self._stop_event.is_set():
+                        break
+                    logger.warning(
+                        f"WebSocket error: {e}. "
+                        f"Reconnecting in {backoff:.0f}s..."
+                    )
+                    GLib.idle_add(
+                        self._emit_error,
+                        f"接続が切れました。{backoff:.0f}秒後に再接続します...",
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+                else:
+                    await client.close()
         finally:
             recorder.stop()
-            await client.close()
             logger.info("Streaming session ended")
 
     async def _send_audio_loop(
@@ -257,7 +292,11 @@ class VoiceDaemonService:
 
 
 def start_dbus_service(
-    ws_url: str, model: str, language: str, commit_interval: int
+    ws_url: str,
+    model: str,
+    language: str,
+    commit_interval: int,
+    compression: str | None = "deflate",
 ):
     """Start the D-Bus service and return the service object."""
     bus = SessionBus()
@@ -266,6 +305,7 @@ def start_dbus_service(
         model=model,
         language=language,
         commit_interval=commit_interval,
+        compression=compression,
     )
 
     logger.info("Publishing D-Bus service: org.fcitx.Fcitx5.Voice")
