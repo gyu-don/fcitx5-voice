@@ -103,7 +103,7 @@ def main():
         sys.exit(1)
 
     # Run GLib main loop for D-Bus
-    logging.info("Entering main loop")
+    logging.debug("Entering main loop")
     loop = GLib.MainLoop()
     try:
         loop.run()

@@ -67,7 +67,7 @@ class RivaWSClient:
     async def connect(self) -> None:
         """Connect to NIM Riva and configure transcription session."""
         ws_url = f"{self.url.rstrip('/')}/v1/realtime?intent=transcription"
-        logger.info(f"Connecting to {ws_url}")
+        logger.debug(f"Connecting to {ws_url}")
 
         logger.debug(f"WebSocket compression: {self.compression}")
         self._ws = await websockets.connect(
@@ -79,7 +79,7 @@ class RivaWSClient:
         init = json.loads(init_msg)
         if init.get("type") != "conversation.created":
             raise RuntimeError(f"Unexpected init message: {init}")
-        logger.info("WebSocket: conversation.created received")
+        logger.debug("WebSocket: conversation.created received")
 
         # Configure session
         await self._ws.send(
@@ -93,6 +93,10 @@ class RivaWSClient:
                             "language": self.language,
                             "model": self.model,
                         },
+                        "recognition_config": {
+                            "enable_automatic_punctuation": True,
+                            "enable_verbatim_transcripts": False,
+                        },
                     },
                 }
             )
@@ -103,7 +107,7 @@ class RivaWSClient:
         update = json.loads(update_msg)
         if update.get("type") == "error":
             raise RuntimeError(f"Session configuration error: {update}")
-        logger.info(
+        logger.debug(
             f"WebSocket: session configured (model={self.model}, "
             f"language={self.language})"
         )
@@ -172,4 +176,4 @@ class RivaWSClient:
             except Exception as e:
                 logger.debug(f"WebSocket close error (ignored): {e}")
             self._ws = None
-            logger.info("WebSocket connection closed")
+            logger.debug("WebSocket connection closed")

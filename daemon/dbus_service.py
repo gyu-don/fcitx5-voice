@@ -69,7 +69,7 @@ class VoiceDaemonService:
         self.recording = False
         self._stop_event: threading.Event | None = None
         self._stream_thread: threading.Thread | None = None
-        logger.info(
+        logger.debug(
             f"Config: url={ws_url}, model={model}, "
             f"language={language}, commit_interval={commit_interval}, "
             f"compression={compression}"
@@ -89,7 +89,7 @@ class VoiceDaemonService:
                 self.Error("前回の録音セッションがまだ終了していません")
                 return
 
-        logger.info("D-Bus: StartRecording called")
+        logger.debug("D-Bus: StartRecording called")
         self.recording = True
         self.RecordingStarted()
         self._start_streaming()
@@ -105,7 +105,7 @@ class VoiceDaemonService:
             logger.warning("Not recording")
             return
 
-        logger.info("D-Bus: StopRecording called")
+        logger.debug("D-Bus: StopRecording called")
         self.recording = False
         if self._stop_event:
             self._stop_event.set()
@@ -262,7 +262,7 @@ class VoiceDaemonService:
         # Send final commit for any remaining audio
         if chunks_since_commit > 0:
             await client.commit()
-            logger.info("Sent final audio commit")
+            logger.debug("Sent final audio commit")
 
     def _emit_delta(self, text: str) -> bool:
         """Emit TranscriptionDelta signal (called via GLib.idle_add)."""
@@ -273,7 +273,7 @@ class VoiceDaemonService:
     def _emit_completed(self, text: str) -> bool:
         """Emit TranscriptionComplete signal (called via GLib.idle_add)."""
         if text:
-            logger.info(f"Completed: {len(text)} chars")
+            logger.debug(f"Completed: {len(text)} chars")
         self.TranscriptionComplete(text, 0)
         return False  # Don't repeat
 
@@ -308,8 +308,7 @@ def start_dbus_service(
         compression=compression,
     )
 
-    logger.info("Publishing D-Bus service: org.fcitx.Fcitx5.Voice")
     bus.publish("org.fcitx.Fcitx5.Voice", service)
-    logger.info("D-Bus service published successfully")
+    logger.info("D-Bus service published: org.fcitx.Fcitx5.Voice")
 
     return service
