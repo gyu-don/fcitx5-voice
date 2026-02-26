@@ -13,7 +13,7 @@ from pydbus import SessionBus
 from pydbus.generic import signal
 
 from .recorder import StreamingRecorder
-from .ws_client import RivaWSClient, DEFAULT_COMMIT_INTERVAL
+from .ws_client import RivaWSClient
 
 logger = logging.getLogger(__name__)
 
@@ -57,22 +57,19 @@ class VoiceDaemonService:
         ws_url: str,
         model: str,
         language: str,
-        commit_interval: int = DEFAULT_COMMIT_INTERVAL,
         compression: str | None = "deflate",
     ):
         logger.info("Initializing voice daemon service (streaming mode)")
         self.ws_url = ws_url
         self.model = model
         self.language = language
-        self.commit_interval = commit_interval
         self.compression = compression
         self.recording = False
         self._stop_event: threading.Event | None = None
         self._stream_thread: threading.Thread | None = None
         logger.debug(
             f"Config: url={ws_url}, model={model}, "
-            f"language={language}, commit_interval={commit_interval}, "
-            f"compression={compression}"
+            f"language={language}, compression={compression}"
         )
 
     def StartRecording(self):
@@ -192,27 +189,33 @@ class VoiceDaemonService:
                     )
                     recv_task = asyncio.create_task(client.recv_loop())
 
-                    done, pending = await asyncio.wait(
+                    done_tasks, pending = await asyncio.wait(
                         [send_task, recv_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
 
                     # Check for exceptions in completed tasks
-                    for task in done:
+                    for task in done_tasks:
                         if task.exception():
                             raise task.exception()
 
-                    # If stop was requested, exit cleanly
-                    if self._stop_event.is_set():
-                        for task in pending:
-                            task.cancel()
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
+                    # send_task completed (stop requested):
+                    # wait briefly for recv_task to get final events
+                    if send_task in done_tasks and recv_task in pending:
+                        try:
+                            await asyncio.wait_for(recv_task, timeout=3)
+                        except (asyncio.TimeoutError, Exception):
+                            pass
+                        finally:
+                            if not recv_task.done():
+                                recv_task.cancel()
+                                try:
+                                    await recv_task
+                                except asyncio.CancelledError:
+                                    pass
                         break
 
-                    # Unexpected termination — fall through to reconnect
+                    # recv_task completed unexpectedly — reconnect
                     for task in pending:
                         task.cancel()
                         try:
@@ -244,25 +247,84 @@ class VoiceDaemonService:
     async def _send_audio_loop(
         self, client: RivaWSClient, recorder: StreamingRecorder
     ):
-        """Read audio chunks and send to WebSocket server."""
+        """Read audio chunks and send to WebSocket server.
+
+        Commits are triggered by silence detection. After speech followed
+        by silence, a commit is sent.
+        """
+        import struct
+
+        SILENCE_THRESHOLD = 1500
+        SILENCE_COMMIT_CHUNKS = 8   # 800ms silence → commit
+        FLUSH_INTERVAL_CHUNKS = 10  # Flush every 1s during silence
+        MAX_FLUSHES = 3             # Up to 3 flush commits
+
         loop = asyncio.get_event_loop()
+        has_speech = False
+        silence_chunks = 0
         chunks_since_commit = 0
+        flush_count = 0
+        silence_after_commit = 0
 
         while not self._stop_event.is_set():
             chunk = await loop.run_in_executor(
                 None, lambda: recorder.get_chunk(timeout=0.2)
             )
-            if chunk:
-                await client.send_audio(chunk)
-                chunks_since_commit += 1
-                if chunks_since_commit >= self.commit_interval:
-                    await client.commit()
-                    chunks_since_commit = 0
+            if not chunk:
+                continue
+
+            # Compute RMS energy of PCM16 audio
+            samples = struct.unpack(f"<{len(chunk) // 2}h", chunk)
+            rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+
+            is_speech = rms >= SILENCE_THRESHOLD
+            if is_speech:
+                has_speech = True
+                silence_chunks = 0
+                flush_count = 0
+                silence_after_commit = 0
+            else:
+                silence_chunks += 1
+                if flush_count < MAX_FLUSHES:
+                    silence_after_commit += 1
+
+            await client.send_audio(chunk)
+            chunks_since_commit += 1
+
+            # Log RMS periodically (every 10 chunks = 1s)
+            if chunks_since_commit % 10 == 0:
+                logger.debug(
+                    f"RMS: {rms:.0f} speech={is_speech} "
+                    f"has_speech={has_speech} silence={silence_chunks}"
+                )
+
+            # Commit after speech followed by silence
+            if has_speech and silence_chunks >= SILENCE_COMMIT_CHUNKS:
+                await client.commit()
+                logger.debug(
+                    f"Commit: {chunks_since_commit} chunks (rms={rms:.0f})"
+                )
+                has_speech = False
+                chunks_since_commit = 0
+                flush_count = 0
+                silence_after_commit = 0
+
+            # Periodic flush commits during silence to finalize text
+            if (flush_count < MAX_FLUSHES
+                    and silence_after_commit > 0
+                    and silence_after_commit % FLUSH_INTERVAL_CHUNKS == 0):
+                await client.commit()
+                flush_count += 1
+                logger.debug(
+                    f"Flush {flush_count}/{MAX_FLUSHES}: "
+                    f"{chunks_since_commit} chunks"
+                )
+                chunks_since_commit = 0
 
         # Send final commit for any remaining audio
         if chunks_since_commit > 0:
             await client.commit()
-            logger.debug("Sent final audio commit")
+            logger.debug("Sent final commit")
 
     def _emit_delta(self, text: str) -> bool:
         """Emit TranscriptionDelta signal (called via GLib.idle_add)."""
@@ -295,7 +357,6 @@ def start_dbus_service(
     ws_url: str,
     model: str,
     language: str,
-    commit_interval: int,
     compression: str | None = "deflate",
 ):
     """Start the D-Bus service and return the service object."""
@@ -304,7 +365,6 @@ def start_dbus_service(
         ws_url=ws_url,
         model=model,
         language=language,
-        commit_interval=commit_interval,
         compression=compression,
     )
 

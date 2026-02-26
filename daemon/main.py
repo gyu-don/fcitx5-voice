@@ -10,7 +10,7 @@ import sys
 from gi.repository import GLib
 
 from .dbus_service import start_dbus_service
-from .ws_client import DEFAULT_URL, DEFAULT_MODEL, DEFAULT_LANGUAGE, DEFAULT_COMMIT_INTERVAL
+from .ws_client import DEFAULT_URL, DEFAULT_MODEL, DEFAULT_LANGUAGE
 
 # Global service instance for cleanup
 service = None
@@ -64,15 +64,6 @@ def main():
         help=f"ASR model name (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
-        "--commit-interval",
-        type=int,
-        default=DEFAULT_COMMIT_INTERVAL,
-        help=(
-            f"Commit audio buffer every N chunks of "
-            f"{100}ms (default: {DEFAULT_COMMIT_INTERVAL})"
-        ),
-    )
-    parser.add_argument(
         "--compression",
         action=BooleanOptionalAction,
         default=True,
@@ -81,6 +72,8 @@ def main():
     args = parser.parse_args()
 
     setup_logging(args.debug)
+    # Suppress noisy websockets debug logs (audio frame dumps)
+    logging.getLogger("websockets").setLevel(logging.INFO)
     logging.info("Starting fcitx5-voice daemon (streaming mode)")
 
     # Register cleanup handlers
@@ -95,7 +88,6 @@ def main():
             ws_url=args.url,
             model=args.model,
             language=args.language,
-            commit_interval=args.commit_interval,
             compression="deflate" if args.compression else None,
         )
     except Exception as e:
