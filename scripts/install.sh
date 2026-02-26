@@ -1,7 +1,57 @@
 #!/bin/bash
 set -e
 
+# Parse arguments
+RIVA_URL="ws://localhost:9000"
+LANGUAGE="ja-JP"
+LOCAL_INSTALL=false
+
+usage() {
+    echo "Usage: $0 [--local] [--url <websocket-url>] [--language <lang-code>]"
+    echo ""
+    echo "Options:"
+    echo "  --local            Install to ~/.local (no sudo required)"
+    echo "  --url <url>        NIM Riva WebSocket URL (default: ws://localhost:9000)"
+    echo "  --language <code>  Language code (default: ja-JP)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 --local --url ws://my-gpu-server:9000"
+    echo "  $0 --url ws://100.64.0.5:9000 --language en-US"
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --local)
+            LOCAL_INSTALL=true
+            shift
+            ;;
+        --url)
+            RIVA_URL="$2"
+            shift 2
+            ;;
+        --language)
+            LANGUAGE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
 echo "==> Installing fcitx5-voice plugin"
+echo "    URL: $RIVA_URL"
+echo "    Language: $LANGUAGE"
+if [ "$LOCAL_INSTALL" = true ]; then
+    echo "    Mode: local (~/.local, no sudo)"
+else
+    echo "    Mode: system (/usr, requires sudo)"
+fi
 echo ""
 
 # 1. Install Python daemon and dependencies
@@ -29,20 +79,34 @@ echo ""
 echo "==> Building C++ plugin..."
 mkdir -p build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-echo "✓ C++ plugin built"
 
-echo "==> Installing C++ plugin (requires sudo)..."
-sudo make install
-cd ..
-echo "✓ C++ plugin installed to /usr"
+if [ "$LOCAL_INSTALL" = true ]; then
+    cmake .. -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DCMAKE_BUILD_TYPE=Release
+    make -j$(nproc)
+    echo "✓ C++ plugin built"
+
+    echo "==> Installing C++ plugin to ~/.local..."
+    make install
+    cd ..
+    echo "✓ C++ plugin installed to ~/.local"
+else
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+    make -j$(nproc)
+    echo "✓ C++ plugin built"
+
+    echo "==> Installing C++ plugin (requires sudo)..."
+    sudo make install
+    cd ..
+    echo "✓ C++ plugin installed to /usr"
+fi
 echo ""
 
-# 3. Install systemd service
+# 3. Install systemd service (with configured URL and language)
 echo "==> Installing systemd service..."
 mkdir -p ~/.config/systemd/user/
-cp systemd/fcitx5-voice-daemon.service ~/.config/systemd/user/
+sed -e "s|--url ws://localhost:9000|--url $RIVA_URL|" \
+    -e "s|--language ja-JP|--language $LANGUAGE|" \
+    systemd/fcitx5-voice-daemon.service > ~/.config/systemd/user/fcitx5-voice-daemon.service
 systemctl --user daemon-reload
 systemctl --user enable fcitx5-voice-daemon.service
 echo "✓ Systemd service installed and enabled"
@@ -73,6 +137,15 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  fcitx5-voice is now installed and running!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+if [ "$LOCAL_INSTALL" = true ]; then
+    echo "NOTE: Set FCITX_ADDON_DIRS so fcitx5 can find the plugin."
+    echo "      Add to ~/.config/environment.d/fcitx5-voice.conf:"
+    echo ""
+    echo "        FCITX_ADDON_DIRS=/usr/lib/fcitx5:\$HOME/.local/lib/fcitx5"
+    echo ""
+    echo "      Then log out and log back in."
+    echo ""
+fi
 echo "Usage:"
 echo "  • Switch to Voice input method in fcitx5"
 echo "  • Press Shift+Space to start recording"

@@ -13,13 +13,24 @@ systemctl --user daemon-reload
 echo "✓ Daemon stopped and removed"
 echo ""
 
-# 2. Remove C++ plugin (requires sudo)
-echo "==> Removing C++ plugin..."
-sudo rm -f /usr/lib/fcitx5/voice.so
-sudo rm -f /usr/share/fcitx5/addon/voice.conf
-sudo rm -f /usr/share/fcitx5/inputmethod/voice.conf
-echo "✓ Plugin removed from /usr"
-echo ""
+# 2. Remove C++ plugin (both system and local installations)
+if [ -f /usr/lib/fcitx5/voice.so ]; then
+    echo "==> Removing system C++ plugin (requires sudo)..."
+    sudo rm -f /usr/lib/fcitx5/voice.so
+    sudo rm -f /usr/share/fcitx5/addon/voice.conf
+    sudo rm -f /usr/share/fcitx5/inputmethod/voice.conf
+    echo "✓ Plugin removed from /usr"
+    echo ""
+fi
+
+if [ -f "$HOME/.local/lib/fcitx5/voice.so" ]; then
+    echo "==> Removing local C++ plugin..."
+    rm -f "$HOME/.local/lib/fcitx5/voice.so"
+    rm -f "$HOME/.local/share/fcitx5/addon/voice.conf"
+    rm -f "$HOME/.local/share/fcitx5/inputmethod/voice.conf"
+    echo "✓ Plugin removed from ~/.local"
+    echo ""
+fi
 
 # 3. Remove daemon binary
 echo "==> Removing daemon..."
