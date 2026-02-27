@@ -250,12 +250,15 @@ class VoiceDaemonService:
         """Read audio chunks and send to WebSocket server.
 
         Commits are triggered by silence detection. After speech followed
-        by silence, a commit is sent.
+        by silence, a commit is sent. The silence threshold is auto-calibrated
+        from the first second of ambient noise.
         """
         import struct
 
-        SILENCE_THRESHOLD = 1500
-        SILENCE_COMMIT_CHUNKS = 8   # 800ms silence → commit
+        CALIBRATION_CHUNKS = 10     # 1s calibration period
+        NOISE_MULTIPLIER = 3.0      # threshold = noise_floor * multiplier
+        MIN_THRESHOLD = 300         # absolute minimum threshold
+        SILENCE_COMMIT_CHUNKS = 2   # 200ms silence → commit
         FLUSH_INTERVAL_CHUNKS = 10  # Flush every 1s during silence
         MAX_FLUSHES = 3             # Up to 3 flush commits
 
@@ -265,6 +268,10 @@ class VoiceDaemonService:
         chunks_since_commit = 0
         flush_count = 0
         silence_after_commit = 0
+
+        # Auto-calibration state
+        calibration_rms_values: list[float] = []
+        silence_threshold = 0.0  # Will be set after calibration
 
         while not self._stop_event.is_set():
             chunk = await loop.run_in_executor(
@@ -277,7 +284,28 @@ class VoiceDaemonService:
             samples = struct.unpack(f"<{len(chunk) // 2}h", chunk)
             rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
 
-            is_speech = rms >= SILENCE_THRESHOLD
+            # Send audio to server during calibration too
+            await client.send_audio(chunk)
+            chunks_since_commit += 1
+
+            # Calibration phase: collect noise floor samples
+            if len(calibration_rms_values) < CALIBRATION_CHUNKS:
+                calibration_rms_values.append(rms)
+                if len(calibration_rms_values) == CALIBRATION_CHUNKS:
+                    noise_floor = (
+                        sum(calibration_rms_values)
+                        / len(calibration_rms_values)
+                    )
+                    silence_threshold = max(
+                        noise_floor * NOISE_MULTIPLIER, MIN_THRESHOLD
+                    )
+                    logger.info(
+                        f"Noise calibration: floor={noise_floor:.0f} "
+                        f"threshold={silence_threshold:.0f}"
+                    )
+                continue
+
+            is_speech = rms >= silence_threshold
             if is_speech:
                 has_speech = True
                 silence_chunks = 0
@@ -288,14 +316,12 @@ class VoiceDaemonService:
                 if flush_count < MAX_FLUSHES:
                     silence_after_commit += 1
 
-            await client.send_audio(chunk)
-            chunks_since_commit += 1
-
             # Log RMS periodically (every 10 chunks = 1s)
             if chunks_since_commit % 10 == 0:
                 logger.debug(
-                    f"RMS: {rms:.0f} speech={is_speech} "
-                    f"has_speech={has_speech} silence={silence_chunks}"
+                    f"RMS: {rms:.0f} threshold={silence_threshold:.0f} "
+                    f"speech={is_speech} has_speech={has_speech} "
+                    f"silence={silence_chunks}"
                 )
 
             # Commit after speech followed by silence
