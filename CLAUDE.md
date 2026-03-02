@@ -77,7 +77,7 @@ uv sync
 ```bash
 # Edit daemon/*.py files
 # Run directly with debug logging
-uv run fcitx5-voice-daemon --url ws://localhost:9000 --debug
+uv run fcitx5-voice-daemon --url <ASR_SERVER_URL> --debug
 
 # Or restart systemd service
 systemctl --user restart fcitx5-voice-daemon
@@ -126,6 +126,108 @@ fcitx5-remote -a | grep -i voice
 ls -lh /usr/lib/fcitx5/voice.so
 nm -D /usr/lib/fcitx5/voice.so | grep fcitx_addon_factory
 ```
+
+### Debugging Tools (`tools/`)
+
+自声を出さずにデバッグするためのツール群。カバレッジは4層に分かれる：
+
+```
+tools/replay_to_server.py   WAVをRivaサーバーに直接送信（daemon・D-Bus飛ばし）
+tools/test_pipeline.py      daemon内部ロジック＋C++プラグインシミュレーター（D-Bus飛ばし）
+tools/run_e2e.py            フルスタック一気通貫テスト（mock or 実サーバー）
+```
+
+**フィクスチャ生成（初回・TTS音声キャッシュ）:**
+```bash
+# edge-tts + ffmpeg が必要
+uv sync --extra tools
+sudo pacman -S ffmpeg
+
+# 生成（tools/fixtures/ にキャッシュ、gitignore済み）
+uv run python tools/generate_fixtures.py
+
+# 状態確認
+uv run python tools/generate_fixtures.py --list
+
+# 強制再生成
+uv run python tools/generate_fixtures.py --force long_speech
+```
+
+生成されるフィクスチャ：
+- `short_phrase.wav` — 「これはテストです。」(~3.7s)
+- `multi_phrase.wav` — 3文連続 (~12s)
+- `long_speech.wav` — 3文連続・長め (~15s)
+- `noisy.wav` — 無音区間にノイズ入り (~8s)
+
+**WAV直接再生（Rivaサーバーへ）:**
+```bash
+uv run python tools/replay_to_server.py tools/fixtures/short_phrase.wav \
+  --url <ASR_SERVER_URL>
+```
+
+**パイプラインテスト（D-Bus不要・モックサーバー使用）:**
+```bash
+# 全シナリオ実行
+uv run python tools/test_pipeline.py
+
+# 特定シナリオのみ
+uv run python tools/test_pipeline.py --scenario plugin-double --verbose
+```
+
+シナリオ一覧: `normal` / `mid-stop` / `immediate-stop` / `preedit` /
+`plugin-normal` / `plugin-stop` / `plugin-immediate` / `plugin-double`
+
+`plugin-*` シナリオは `VoiceEngineSimulator` が `voice_engine.cpp` のステートマシンを再現し、commitString の呼ばれ方を検証する。
+
+**E2Eテスト:**
+```bash
+# モードA: モックサーバー（ネット不要）
+uv run python tools/run_e2e.py
+
+# モードB: 実サーバー + daemon経由（フルスタック）
+uv run python tools/run_e2e.py --live --url <ASR_SERVER_URL>
+
+# フィクスチャ指定・期待文字列アサーション付き
+uv run python tools/run_e2e.py --live --url <ASR_SERVER_URL> \
+  --fixture long_speech --expect "音声認識"
+```
+
+live モードでは daemon が `--replay-wav` でWAVを再生し、WAV終了時に自動で `RecordingStopped` を発火する。`TranscriptionComplete` が全て到着した後に発火するよう実装されている（`dbus_service.py` の `_on_source_exhausted` 参照）。
+
+## Testing After Changes
+
+自動テストは `tools/` 配下のスタンドアロンスクリプト（pytest不使用）。
+変更箇所に応じて以下を実行する。
+
+### どのテストを実行するか
+
+| 変更箇所 | 実行するテスト |
+|----------|---------------|
+| `daemon/recorder.py`, `daemon/ws_client.py`, `daemon/dbus_service.py`（送信ロジック） | `uv run python tools/test_pipeline.py` |
+| `tools/mock_riva_server.py`, `tools/replay_to_server.py` | `uv run python tools/run_e2e.py` (mock mode) |
+| `tools/test_pipeline.py` 自体 | `uv run python tools/test_pipeline.py` |
+| `tools/run_e2e.py` 自体 | `uv run python tools/run_e2e.py` |
+| `plugin/` (C++) | ビルド後に手動テスト（自動テストなし） |
+
+### 実行コマンド
+
+```bash
+# パイプラインテスト（mockサーバー自動起動、ネット不要、~10秒）
+uv run python tools/test_pipeline.py
+
+# E2Eテスト mockモード（mockサーバー＋WAV生成＋アサーション、ネット不要、~15秒）
+uv run python tools/run_e2e.py
+```
+
+両方とも終了コード 0 = PASS、1 = FAIL。
+live モード (`--live --url ...`) は実サーバーが必要なので自動実行しない。
+
+### 注意事項
+
+- `test_pipeline.py` の `_send_audio_loop` は `dbus_service.py` の同名メソッドの複製。
+  daemonの送信ロジック（silence detection定数等）を変更したら両方更新すること。
+- `generate_fixtures.py` はTTSフィクスチャ生成ツール。テストではない。
+  mock/liveモード両方で `short_phrase` フィクスチャを使用（未生成なら自動生成）。
 
 ## Critical Details
 
@@ -215,10 +317,11 @@ Root `CMakeLists.txt`:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--url` | `ws://localhost:9000` | NIM Riva WebSocket URL |
+| `--url` | `ws://localhost:9000` | ASR WebSocket URL |
 | `--language` | `ja-JP` | Language code |
 | `--model` | `parakeet-rnnt-1.1b-...` | ASR model name |
-| `--commit-interval` | `10` | Commit every N chunks (N * 100ms) |
+| `--compression` / `--no-compression` | on | WebSocket permessage-deflate |
+| `--replay-wav FILE` | off | マイクの代わりにWAVファイルを再生（デバッグ用） |
 | `--debug` | off | Debug logging |
 
 ### Change Hotkey
@@ -232,7 +335,7 @@ Change to different key combination, rebuild plugin.
 ## Troubleshooting
 
 ### WebSocket connection fails
-Ensure SSH tunnel or Tailscale is active. Test: `python3 -c "import websockets, asyncio; asyncio.run(websockets.connect('ws://localhost:9000'))"`
+ネットワーク接続を確認（Tailscale使用時はURLが `ws://<hostname>.ts.net:<port>` 形式になる）。接続テスト: `python3 -c "import websockets, asyncio; asyncio.run(websockets.connect('<ASR_SERVER_URL>'))"`
 
 ### Plugin not recognized by fcitx5
 Verify installation path matches fcitx5's search paths. Check `qdbus` addon list.

@@ -29,6 +29,7 @@ Test with the daemon:
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import sys
@@ -179,7 +180,6 @@ async def handle_connection(
 
             # --- Step 3: Handle audio append ---
             elif msg_type == "input_audio_buffer.append":
-                import base64
                 audio_b64 = msg.get("audio", "")
                 try:
                     audio_raw = base64.b64decode(audio_b64)
@@ -221,7 +221,7 @@ async def handle_connection(
                 audio_bytes_since_commit = 0
 
                 # Schedule response asynchronously so we don't block the recv loop
-                asyncio.ensure_future(
+                asyncio.create_task(
                     _send_transcription_response(
                         websocket=websocket,
                         log_prefix=log_prefix,

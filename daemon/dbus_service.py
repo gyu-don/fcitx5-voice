@@ -251,6 +251,11 @@ class VoiceDaemonService:
                     await client.close()
         finally:
             source.stop()
+            # If WAV replay ended naturally (not via StopRecording), emit
+            # RecordingStopped now — after recv_task has queued all completion
+            # callbacks, so they arrive before RecordingStopped on D-Bus.
+            if source.exhausted and not self._stop_event.is_set():
+                GLib.idle_add(self._on_source_exhausted)
             logger.info("Streaming session ended")
 
     async def _send_audio_loop(
@@ -363,6 +368,14 @@ class VoiceDaemonService:
         if chunks_since_commit > 0:
             await client.commit()
             logger.debug("Sent final commit")
+
+    def _on_source_exhausted(self) -> bool:
+        """Emit RecordingStopped when WAV replay finishes (called via GLib.idle_add)."""
+        if self.recording:
+            logger.info("Auto-stopping: audio source exhausted")
+            self.recording = False
+            self.RecordingStopped()
+        return False
 
     def _emit_delta(self, text: str) -> bool:
         """Emit TranscriptionDelta signal (called via GLib.idle_add)."""

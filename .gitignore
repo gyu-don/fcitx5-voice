@@ -44,3 +44,6 @@ fcitx5-voice-ctl
 # Distribution
 dist/
 *.egg-info/
+
+# Generated test fixtures (TTS audio, cached locally)
+tools/fixtures/

@@ -26,12 +26,10 @@ Exit codes:
 
 import argparse
 import asyncio
-import os
 import signal
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -375,8 +373,12 @@ async def _send_audio_loop(
 ):
     """Send audio with silence-based commits (mirrors daemon logic).
 
-    This replicates dbus_service.py VoiceDaemonService._send_audio_loop()
-    so we test the same commit timing the daemon uses.
+    IMPORTANT: This replicates the silence detection and commit logic from
+    dbus_service.py VoiceDaemonService._send_audio_loop(). The constants
+    and algorithm must be kept in sync:
+      - CALIBRATION_CHUNKS, NOISE_MULTIPLIER, MIN_THRESHOLD
+      - SILENCE_COMMIT_CHUNKS, FLUSH_INTERVAL_CHUNKS, MAX_FLUSHES
+    If the daemon's commit logic changes, update this copy too.
 
     Args:
         stop_after_chunks: If set, trigger stop_event after sending this
@@ -1134,23 +1136,22 @@ def main() -> int:
 
     python = sys.executable
     wav_path = args.wav
-    wav_tmpfile = None
 
-    # --- Generate test WAV if needed ---
+    # --- Resolve fixture WAV if not provided ---
     if not wav_path:
-        wav_tmpfile = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        wav_path = wav_tmpfile.name
-        wav_tmpfile.close()
-
-        print(f"Generating test WAV: {wav_path}")
-        gen_result = subprocess.run(
-            [python, str(TOOLS_DIR / "generate_test_wav.py"), "-o", wav_path],
-            capture_output=True,
-            text=True,
-        )
-        if gen_result.returncode != 0:
-            print(f"FAILED to generate WAV:\n{gen_result.stderr}", file=sys.stderr)
-            return 1
+        fixtures_dir = TOOLS_DIR / "fixtures"
+        wav_path = str(fixtures_dir / "multi_phrase.wav")
+        if not Path(wav_path).exists():
+            print(f"Generating fixture: short_phrase")
+            gen_result = subprocess.run(
+                [python, str(TOOLS_DIR / "generate_fixtures.py"), "multi_phrase"],
+                capture_output=True,
+                text=True,
+            )
+            if gen_result.returncode != 0 or not Path(wav_path).exists():
+                print(f"FAILED to generate fixture:\n{gen_result.stderr}", file=sys.stderr)
+                return 1
+        print(f"Using fixture: {wav_path}")
 
     # --- Start mock server ---
     print(f"Starting mock Riva server on port {args.port}...")
@@ -1194,10 +1195,6 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             server_proc.kill()
             server_proc.wait()
-
-        # Clean up temp WAV
-        if wav_tmpfile:
-            os.unlink(wav_path)
 
     # --- Summary ---
     passed = sum(1 for r in all_results if r.passed)

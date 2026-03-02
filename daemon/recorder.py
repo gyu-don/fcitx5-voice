@@ -210,8 +210,7 @@ class WavReplaySource:
 
     def stop(self) -> None:
         self._exhausted = True
+        if self._feed_thread is not None:
+            self._feed_thread.join(timeout=2.0)
+            self._feed_thread = None
         logger.info("WAV replay stopped")
-
-
-# Backwards compatibility alias
-StreamingRecorder = MicSource
