@@ -12,7 +12,7 @@ from gi.repository import GLib
 from pydbus import SessionBus
 from pydbus.generic import signal
 
-from .recorder import StreamingRecorder
+from .recorder import AudioSource, MicSource, WavReplaySource
 from .ws_client import RivaWSClient
 
 logger = logging.getLogger(__name__)
@@ -58,18 +58,21 @@ class VoiceDaemonService:
         model: str,
         language: str,
         compression: str | None = "deflate",
+        replay_wav: str | None = None,
     ):
         logger.info("Initializing voice daemon service (streaming mode)")
         self.ws_url = ws_url
         self.model = model
         self.language = language
         self.compression = compression
+        self.replay_wav = replay_wav
         self.recording = False
         self._stop_event: threading.Event | None = None
         self._stream_thread: threading.Thread | None = None
         logger.debug(
             f"Config: url={ws_url}, model={model}, "
             f"language={language}, compression={compression}"
+            + (f", replay_wav={replay_wav}" if replay_wav else "")
         )
 
     def StartRecording(self):
@@ -151,15 +154,21 @@ class VoiceDaemonService:
         finally:
             loop.close()
 
+    def _create_audio_source(self) -> AudioSource:
+        """Create the appropriate audio source based on configuration."""
+        if self.replay_wav:
+            return WavReplaySource(self.replay_wav, realtime=True)
+        return MicSource()
+
     async def _stream(self):
         """Main streaming coroutine with automatic reconnection.
 
-        The recorder runs continuously outside the reconnection loop.
+        The audio source runs continuously outside the reconnection loop.
         On connection failure, stale audio is drained and reconnection
         is attempted with exponential backoff.
         """
-        recorder = StreamingRecorder()
-        recorder.start()
+        source = self._create_audio_source()
+        source.start()
 
         try:
             backoff = 1.0
@@ -182,10 +191,10 @@ class VoiceDaemonService:
                 try:
                     await client.connect()
                     backoff = 1.0  # Reset on successful connection
-                    recorder.drain()  # Discard stale audio from reconnect gap
+                    source.drain()  # Discard stale audio from reconnect gap
 
                     send_task = asyncio.create_task(
-                        self._send_audio_loop(client, recorder)
+                        self._send_audio_loop(client, source)
                     )
                     recv_task = asyncio.create_task(client.recv_loop())
 
@@ -241,13 +250,13 @@ class VoiceDaemonService:
                 else:
                     await client.close()
         finally:
-            recorder.stop()
+            source.stop()
             logger.info("Streaming session ended")
 
     async def _send_audio_loop(
-        self, client: RivaWSClient, recorder: StreamingRecorder
+        self, client: RivaWSClient, source: AudioSource
     ):
-        """Read audio chunks and send to WebSocket server.
+        """Read audio chunks from source and send to WebSocket server.
 
         Commits are triggered by silence detection. After speech followed
         by silence, a commit is sent. The silence threshold is auto-calibrated
@@ -275,9 +284,12 @@ class VoiceDaemonService:
 
         while not self._stop_event.is_set():
             chunk = await loop.run_in_executor(
-                None, lambda: recorder.get_chunk(timeout=0.2)
+                None, lambda: source.get_chunk(timeout=0.2)
             )
             if not chunk:
+                if source.exhausted:
+                    logger.info("Audio source exhausted")
+                    break
                 continue
 
             # Compute RMS energy of PCM16 audio
@@ -384,6 +396,7 @@ def start_dbus_service(
     model: str,
     language: str,
     compression: str | None = "deflate",
+    replay_wav: str | None = None,
 ):
     """Start the D-Bus service and return the service object."""
     bus = SessionBus()
@@ -392,6 +405,7 @@ def start_dbus_service(
         model=model,
         language=language,
         compression=compression,
+        replay_wav=replay_wav,
     )
 
     bus.publish("org.fcitx.Fcitx5.Voice", service)

@@ -69,6 +69,13 @@ def main():
         default=True,
         help="Enable WebSocket compression (permessage-deflate). Use --no-compression to disable.",
     )
+    parser.add_argument(
+        "--replay-wav",
+        metavar="FILE",
+        default=None,
+        help="Replay a WAV file instead of capturing from microphone. "
+        "The WAV must be 16-bit PCM, mono, 16kHz.",
+    )
     args = parser.parse_args()
 
     setup_logging(args.debug)
@@ -89,6 +96,7 @@ def main():
             model=args.model,
             language=args.language,
             compression="deflate" if args.compression else None,
+            replay_wav=args.replay_wav,
         )
     except Exception as e:
         logging.error(f"Failed to start D-Bus service: {e}")
