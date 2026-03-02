@@ -10,7 +10,7 @@ import sys
 from gi.repository import GLib
 
 from .dbus_service import start_dbus_service
-from .ws_client import DEFAULT_URL, DEFAULT_MODEL, DEFAULT_LANGUAGE
+from .ws_client import DEFAULT_URL, DEFAULT_MODEL, DEFAULT_LANGUAGE, DEFAULT_BACKEND
 
 # Global service instance for cleanup
 service = None
@@ -69,6 +69,12 @@ def main():
         default=True,
         help="Enable WebSocket compression (permessage-deflate). Use --no-compression to disable.",
     )
+    parser.add_argument(
+        "--backend",
+        default=DEFAULT_BACKEND,
+        choices=["nim", "vllm"],
+        help=f"ASR backend protocol: 'nim' for NVIDIA NIM Riva, 'vllm' for vLLM Realtime API (default: {DEFAULT_BACKEND})",
+    )
     args = parser.parse_args()
 
     setup_logging(args.debug)
@@ -89,6 +95,7 @@ def main():
             model=args.model,
             language=args.language,
             compression="deflate" if args.compression else None,
+            backend=args.backend,
         )
     except Exception as e:
         logging.error(f"Failed to start D-Bus service: {e}")
