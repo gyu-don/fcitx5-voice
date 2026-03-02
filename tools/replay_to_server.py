@@ -16,7 +16,6 @@ import argparse
 import asyncio
 import json
 import logging
-import struct
 import sys
 import time
 import wave
@@ -28,22 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from daemon.ws_client import RivaWSClient, DEFAULT_URL, DEFAULT_MODEL, DEFAULT_LANGUAGE  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# Audio constants (mirror daemon/recorder.py)
-# ---------------------------------------------------------------------------
-
-SAMPLE_RATE = 16000       # Hz
-CHUNK_SIZE = 1600         # samples per 100 ms chunk
-CHUNK_BYTES = CHUNK_SIZE * 2  # 2 bytes per int16 sample = 3200 bytes
-
-# Silence detection constants (mirror daemon/dbus_service.py _send_audio_loop)
-CALIBRATION_CHUNKS = 10       # 1 s calibration period
-NOISE_MULTIPLIER = 3.0        # threshold = noise_floor * multiplier
-MIN_THRESHOLD = 300           # absolute minimum threshold
-SILENCE_COMMIT_CHUNKS = 2     # 200 ms silence -> commit
-FLUSH_INTERVAL_CHUNKS = 10    # flush every 1 s during silence
-MAX_FLUSHES = 3               # up to 3 flush commits
+from daemon.recorder import SAMPLE_RATE, CHUNK_SIZE, CHUNK_BYTES  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # ANSI color helpers
@@ -197,19 +181,6 @@ def read_chunks(wf: wave.Wave_read) -> list[bytes]:
 
 
 # ---------------------------------------------------------------------------
-# RMS helper for silence detection
-# ---------------------------------------------------------------------------
-
-def rms_of_chunk(chunk: bytes) -> float:
-    """Compute the RMS energy of a PCM16 chunk."""
-    n = len(chunk) // 2
-    if n == 0:
-        return 0.0
-    samples = struct.unpack(f"<{n}h", chunk)
-    return (sum(s * s for s in samples) / n) ** 0.5
-
-
-# ---------------------------------------------------------------------------
 # Send task
 # ---------------------------------------------------------------------------
 
@@ -237,105 +208,6 @@ async def send_audio_fixed_interval(
             state.commits_sent += 1
             state.log_commit(
                 f"Commit #{state.commits_sent} (sent {audio_sent_s:.1f}s of audio)"
-            )
-            await client.commit()
-            chunks_since_commit = 0
-
-        if chunk_delay > 0:
-            await asyncio.sleep(chunk_delay)
-
-    # Final commit for any remaining audio
-    if chunks_since_commit > 0:
-        audio_sent_s = chunks_since_commit * 0.1
-        state.commits_sent += 1
-        state.log_commit(
-            f"Commit #{state.commits_sent} (sent {audio_sent_s:.1f}s of audio, final)"
-        )
-        await client.commit()
-
-    state.send_done.set()
-
-
-async def send_audio_auto_silence(
-    client: RivaWSClient,
-    chunks: list[bytes],
-    chunk_delay: float,
-    state: ReplayState,
-) -> None:
-    """Send audio chunks with auto silence-detection commit logic.
-
-    Mirrors the logic in daemon/dbus_service.py _send_audio_loop().
-    """
-    calibration_rms_values: list[float] = []
-    silence_threshold = 0.0
-
-    has_speech = False
-    silence_chunks = 0
-    chunks_since_commit = 0
-    flush_count = 0
-    silence_after_commit = 0
-
-    for i, chunk in enumerate(chunks):
-        chunk_num = i + 1
-        state.log_chunk(chunk_num)
-
-        rms = rms_of_chunk(chunk)
-        await client.send_audio(chunk)
-        state.chunks_sent += 1
-        state.audio_bytes_sent += len(chunk)
-        chunks_since_commit += 1
-
-        # Calibration phase
-        if len(calibration_rms_values) < CALIBRATION_CHUNKS:
-            calibration_rms_values.append(rms)
-            if len(calibration_rms_values) == CALIBRATION_CHUNKS:
-                noise_floor = sum(calibration_rms_values) / len(calibration_rms_values)
-                silence_threshold = max(noise_floor * NOISE_MULTIPLIER, MIN_THRESHOLD)
-                state.log_info(
-                    f"Noise calibration: floor={noise_floor:.0f}, "
-                    f"threshold={silence_threshold:.0f}"
-                )
-            if chunk_delay > 0:
-                await asyncio.sleep(chunk_delay)
-            continue
-
-        is_speech = rms >= silence_threshold
-        if is_speech:
-            has_speech = True
-            silence_chunks = 0
-            flush_count = 0
-            silence_after_commit = 0
-        else:
-            silence_chunks += 1
-            if flush_count < MAX_FLUSHES:
-                silence_after_commit += 1
-
-        # Commit after speech followed by silence
-        if has_speech and silence_chunks >= SILENCE_COMMIT_CHUNKS:
-            audio_sent_s = chunks_since_commit * 0.1
-            state.commits_sent += 1
-            state.log_commit(
-                f"Commit #{state.commits_sent} (sent {audio_sent_s:.1f}s of audio)"
-            )
-            await client.commit()
-            has_speech = False
-            chunks_since_commit = 0
-            flush_count = 0
-            silence_after_commit = 0
-            silence_chunks = 0
-
-        # Periodic flush commits during silence
-        if (
-            flush_count < MAX_FLUSHES
-            and silence_after_commit > 0
-            and silence_after_commit % FLUSH_INTERVAL_CHUNKS == 0
-        ):
-            audio_sent_s = chunks_since_commit * 0.1
-            flush_count += 1
-            state.commits_sent += 1
-            state.log_commit(
-                f"Commit #{state.commits_sent} (flush {flush_count}/{MAX_FLUSHES}, "
-                f"sent {audio_sent_s:.1f}s of audio)"
             )
             await client.commit()
             chunks_since_commit = 0
@@ -425,15 +297,9 @@ async def replay_file(
     )
 
     # Build send and recv tasks
-    if commit_interval > 0:
-        send_coro = send_audio_fixed_interval(
-            client, chunks, commit_interval, chunk_delay, state
-        )
-    else:
-        send_coro = send_audio_auto_silence(
-            client, chunks, chunk_delay, state
-        )
-
+    send_coro = send_audio_fixed_interval(
+        client, chunks, commit_interval, chunk_delay, state
+    )
     send_task = asyncio.create_task(send_coro)
     recv_task = asyncio.create_task(recv_events(client, state))
 
@@ -624,12 +490,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--commit-interval",
         type=int,
-        default=0,
+        default=10,
         metavar="N",
-        help=(
-            "Commit every N chunks (N * 100ms). "
-            "0 = auto mode with silence detection."
-        ),
+        help="Commit every N chunks (N * 100ms).",
     )
     parser.add_argument(
         "--chunk-delay",

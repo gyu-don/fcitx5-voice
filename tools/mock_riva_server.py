@@ -34,7 +34,11 @@ import logging
 import sys
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from daemon.recorder import SAMPLE_RATE, CHUNK_BYTES  # noqa: E402
 
 import websockets
 
@@ -48,11 +52,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Audio format constants (must match daemon/recorder.py)
+# Audio format constants (imported from daemon/recorder.py)
 # ---------------------------------------------------------------------------
 
-SAMPLE_RATE = 16000    # Hz
-SAMPLE_WIDTH = 2       # bytes per sample (int16)
+SAMPLE_WIDTH = 2  # bytes per sample (int16)
 BYTES_PER_SECOND = SAMPLE_RATE * SAMPLE_WIDTH  # 32000 bytes/sec for 16kHz mono 16-bit
 
 # ---------------------------------------------------------------------------

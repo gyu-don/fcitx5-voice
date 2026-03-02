@@ -134,6 +134,7 @@ def main() -> int:
         wav_path,
         "--url", f"ws://localhost:{args.port}",
         "--chunk-delay", "0.01",
+        "--commit-interval", "20",
         "--no-color",
     ]
 
