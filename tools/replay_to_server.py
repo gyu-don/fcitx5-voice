@@ -249,7 +249,7 @@ async def replay_file(
     commit_interval: int,
     chunk_delay: float,
     state: ReplayState,
-) -> None:
+) -> float:
     """Connect to server, stream WAV audio, display results."""
 
     # Wire up callbacks
