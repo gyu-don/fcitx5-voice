@@ -13,7 +13,7 @@ from pydbus import SessionBus
 from pydbus.generic import signal
 
 from .recorder import StreamingRecorder
-from .ws_client import RivaWSClient
+from .ws_client import RivaWSClient, DEFAULT_BACKEND
 
 logger = logging.getLogger(__name__)
 
@@ -58,18 +58,20 @@ class VoiceDaemonService:
         model: str,
         language: str,
         compression: str | None = "deflate",
+        backend: str = DEFAULT_BACKEND,
     ):
         logger.info("Initializing voice daemon service (streaming mode)")
         self.ws_url = ws_url
         self.model = model
         self.language = language
         self.compression = compression
+        self.backend = backend
         self.recording = False
         self._stop_event: threading.Event | None = None
         self._stream_thread: threading.Thread | None = None
         logger.debug(
             f"Config: url={ws_url}, model={model}, "
-            f"language={language}, compression={compression}"
+            f"language={language}, compression={compression}, backend={backend}"
         )
 
     def StartRecording(self):
@@ -169,6 +171,7 @@ class VoiceDaemonService:
                     model=self.model,
                     language=self.language,
                     compression=self.compression,
+                    backend=self.backend,
                     on_delta=lambda text: GLib.idle_add(
                         self._emit_delta, text
                     ),
@@ -200,10 +203,12 @@ class VoiceDaemonService:
                             raise task.exception()
 
                     # send_task completed (stop requested):
-                    # wait briefly for recv_task to get final events
+                    # wait for recv_task to get final events
+                    # vLLM needs longer: generation starts after final commit
                     if send_task in done_tasks and recv_task in pending:
+                        recv_timeout = 30 if self.backend == "vllm" else 3
                         try:
-                            await asyncio.wait_for(recv_task, timeout=3)
+                            await asyncio.wait_for(recv_task, timeout=recv_timeout)
                         except (asyncio.TimeoutError, Exception):
                             pass
                         finally:
@@ -326,12 +331,13 @@ class VoiceDaemonService:
 
             # Commit after speech followed by silence
             if has_speech and silence_chunks >= SILENCE_COMMIT_CHUNKS:
-                await client.commit()
-                logger.debug(
-                    f"Commit: {chunks_since_commit} chunks (rms={rms:.0f})"
-                )
+                sent = await client.commit(stop_event=self._stop_event)
+                if sent:
+                    logger.debug(
+                        f"Commit: {chunks_since_commit} chunks (rms={rms:.0f})"
+                    )
+                    chunks_since_commit = 0
                 has_speech = False
-                chunks_since_commit = 0
                 flush_count = 0
                 silence_after_commit = 0
 
@@ -339,17 +345,18 @@ class VoiceDaemonService:
             if (flush_count < MAX_FLUSHES
                     and silence_after_commit > 0
                     and silence_after_commit % FLUSH_INTERVAL_CHUNKS == 0):
-                await client.commit()
+                sent = await client.commit(stop_event=self._stop_event)
+                if sent:
+                    logger.debug(
+                        f"Flush {flush_count}/{MAX_FLUSHES}: "
+                        f"{chunks_since_commit} chunks"
+                    )
+                    chunks_since_commit = 0
                 flush_count += 1
-                logger.debug(
-                    f"Flush {flush_count}/{MAX_FLUSHES}: "
-                    f"{chunks_since_commit} chunks"
-                )
-                chunks_since_commit = 0
 
         # Send final commit for any remaining audio
         if chunks_since_commit > 0:
-            await client.commit()
+            await client.commit(final=True)
             logger.debug("Sent final commit")
 
     def _emit_delta(self, text: str) -> bool:
@@ -384,6 +391,7 @@ def start_dbus_service(
     model: str,
     language: str,
     compression: str | None = "deflate",
+    backend: str = DEFAULT_BACKEND,
 ):
     """Start the D-Bus service and return the service object."""
     bus = SessionBus()
@@ -392,6 +400,7 @@ def start_dbus_service(
         model=model,
         language=language,
         compression=compression,
+        backend=backend,
     )
 
     bus.publish("org.fcitx.Fcitx5.Voice", service)
