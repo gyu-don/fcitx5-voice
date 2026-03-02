@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import logging
 import struct
 import sys
@@ -83,6 +84,10 @@ class ReplayState:
 
         # Total audio bytes sent (for duration calculation)
         self.audio_bytes_sent: int = 0
+
+        # Capture: track deltas per commit for --capture output
+        self._current_deltas: list[str] = []
+        self.captured_scenarios: list[list[str]] = []
 
         # Flag set by sender when all audio has been sent
         self.send_done: asyncio.Event = asyncio.Event()
@@ -377,11 +382,15 @@ async def replay_file(
 
     # Wire up callbacks
     def on_delta(text: str) -> None:
+        state._current_deltas.append(text)
         state.log_delta(text)
 
     def on_completed(text: str) -> None:
         state.completions_received += 1
         state.completed_texts.append(text)
+        # Save scenario: deltas + final completed text
+        state.captured_scenarios.append(state._current_deltas + [text])
+        state._current_deltas = []
         state.log_completed(text)
 
     def on_error(message: str) -> None:
@@ -532,6 +541,53 @@ async def run(args: argparse.Namespace) -> int:
     else:
         print("  Completed texts      : (none)", flush=True)
 
+    # --capture: write captured scenarios to JSON
+    if args.capture and state.captured_scenarios:
+        capture_path = Path(args.capture)
+        with open(capture_path, "w", encoding="utf-8") as f:
+            json.dump(state.captured_scenarios, f, ensure_ascii=False, indent=2)
+        print(
+            f"  Captured {len(state.captured_scenarios)} scenario(s) "
+            f"to {capture_path}",
+            flush=True,
+        )
+
+    # --expect: compare completed texts against expected values
+    if args.expect:
+        print("", flush=True)
+        expected = args.expect
+        actual = state.completed_texts
+        all_pass = True
+
+        header = _color("=== Assertions ===", _BOLD, use_color)
+        print(header, flush=True)
+
+        for i, exp in enumerate(expected):
+            if i < len(actual):
+                if actual[i] == exp:
+                    status = _color("PASS", _GREEN, use_color)
+                    print(f"  {status} [{i+1}] '{exp}'", flush=True)
+                else:
+                    status = _color("FAIL", _RED, use_color)
+                    print(f"  {status} [{i+1}] expected '{exp}', got '{actual[i]}'", flush=True)
+                    all_pass = False
+            else:
+                status = _color("FAIL", _RED, use_color)
+                print(f"  {status} [{i+1}] expected '{exp}', but no completion received", flush=True)
+                all_pass = False
+
+        if len(actual) > len(expected):
+            extras = actual[len(expected):]
+            for i, text in enumerate(extras):
+                idx = len(expected) + i + 1
+                status = _color("EXTRA", _YELLOW, use_color)
+                print(f"  {status} [{idx}] unexpected completion: '{text}'", flush=True)
+
+        if all_pass and len(actual) == len(expected):
+            print(_color("All assertions passed.", _GREEN, use_color), flush=True)
+        else:
+            return 1
+
     return 0
 
 
@@ -602,6 +658,24 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enable/disable WebSocket per-message deflate compression.",
+    )
+    parser.add_argument(
+        "--expect",
+        action="append",
+        metavar="TEXT",
+        help=(
+            "Expected completed text (can be repeated). "
+            "Exits with code 1 if actual completions don't match. "
+            "Example: --expect 'これはテストです' --expect '音声認識のテスト中'"
+        ),
+    )
+    parser.add_argument(
+        "--capture",
+        metavar="FILE",
+        help=(
+            "Save captured delta/completed sequences to a JSON file. "
+            "Output is compatible with mock_riva_server.py --scenario."
+        ),
     )
     return parser.parse_args()
 
