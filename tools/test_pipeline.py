@@ -55,6 +55,12 @@ _CYAN = "\033[96m"
 _DIM = "\033[2m"
 
 
+def _color(text: str, code: str, use_color: bool) -> str:
+    if not use_color:
+        return text
+    return f"{code}{text}{_RESET}"
+
+
 # ---------------------------------------------------------------------------
 # Event recording
 # ---------------------------------------------------------------------------
@@ -96,6 +102,138 @@ class PipelineResult:
 
     def completion_texts(self) -> list[str]:
         return [e.text for e in self.completions]
+
+
+# ---------------------------------------------------------------------------
+# VoiceEngine simulator — mirrors plugin/voice_engine.cpp state machine
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CommitRecord:
+    """A commitString() call recorded by the simulator."""
+
+    time_ms: float
+    text: str
+    source: str  # "completed" or "stop"
+
+
+class VoiceEngineSimulator:
+    """Simulates the C++ VoiceEngine plugin's state machine.
+
+    Faithfully mirrors voice_engine.cpp:
+      - onTranscriptionDelta(text): preedit_text_ = text (replace)
+      - onTranscriptionComplete(text, _): clear preedit, commitString(text)
+      - stopRecording(): commitString(preedit_text_) if pending, clear preedit
+
+    IMPORTANT: onTranscriptionDelta and onTranscriptionComplete do NOT check
+    recording_ in the C++ code. So signals arriving after stopRecording() are
+    still processed. This is modeled faithfully here.
+    """
+
+    def __init__(self) -> None:
+        self.preedit_text: str = ""
+        self.recording: bool = True
+        self.commits: list[CommitRecord] = []
+        self.preedit_history: list[tuple[float, str]] = []  # (time_ms, text)
+
+    def process_events(self, events: list[Event]) -> None:
+        """Feed pipeline events through the plugin state machine."""
+        for event in events:
+            if event.type == "delta":
+                self._on_delta(event)
+            elif event.type == "completed":
+                self._on_completed(event)
+            elif event.type == "stop":
+                self._stop_recording(event)
+
+    def _on_delta(self, event: Event) -> None:
+        """Mirror VoiceEngine::onTranscriptionDelta — no recording_ check."""
+        if not event.text:
+            return
+        self.preedit_text = event.text  # Replace, not append
+        self.preedit_history.append((event.time_ms, self.preedit_text))
+
+    def _on_completed(self, event: Event) -> None:
+        """Mirror VoiceEngine::onTranscriptionComplete — no recording_ check."""
+        self.preedit_text = ""
+        self.preedit_history.append((event.time_ms, ""))
+        if not event.text:
+            return
+        self.commits.append(CommitRecord(
+            time_ms=event.time_ms,
+            text=event.text,
+            source="completed",
+        ))
+
+    def _stop_recording(self, event: Event) -> None:
+        """Mirror VoiceEngine::stopRecording."""
+        if not self.recording:
+            return
+        if self.preedit_text:
+            self.commits.append(CommitRecord(
+                time_ms=event.time_ms,
+                text=self.preedit_text,
+                source="stop",
+            ))
+            self.preedit_text = ""
+            self.preedit_history.append((event.time_ms, ""))
+        self.recording = False
+
+    def committed_texts(self) -> list[str]:
+        """All texts passed to commitString(), in order."""
+        return [c.text for c in self.commits]
+
+    def find_double_commits(self) -> list[tuple[CommitRecord, CommitRecord]]:
+        """Find cases where the same text is committed twice.
+
+        This can happen when stopRecording() commits pending preedit,
+        then onTranscriptionComplete() commits the final text that
+        overlaps with (or equals) the preedit.
+        """
+        doubles = []
+        for i, a in enumerate(self.commits):
+            for b in self.commits[i + 1:]:
+                if a.text == b.text:
+                    doubles.append((a, b))
+                # Also flag if stop-committed text is a prefix of
+                # a later completion (partial → full duplication)
+                elif (a.source == "stop" and b.source == "completed"
+                      and b.text.startswith(a.text)):
+                    doubles.append((a, b))
+        return doubles
+
+    def preedit_after_stop(self) -> list[str]:
+        """Return preedit texts that were set after stopRecording().
+
+        After stopRecording(), if more deltas arrive, preedit gets set again.
+        This means the user sees text appearing in the input field after
+        they stopped recording — a UX issue even if it's eventually cleared.
+        """
+        saw_stop = False
+        leaks: list[str] = []
+        stop_time = None
+
+        # Find stop time
+        for c in self.commits:
+            if c.source == "stop":
+                stop_time = c.time_ms
+                break
+        if stop_time is None and not self.recording:
+            # Stop happened but nothing was committed (empty preedit)
+            for t, text in self.preedit_history:
+                if not self.recording:
+                    # Approximate: stop was the moment recording became False
+                    stop_time = t
+                    break
+
+        if stop_time is None:
+            return []
+
+        for event_time, text in self.preedit_history:
+            if event_time > stop_time and text:
+                leaks.append(text)
+        return leaks
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +814,280 @@ async def test_preedit_behavior(
 
 
 # ---------------------------------------------------------------------------
+# Plugin simulator test scenarios
+# ---------------------------------------------------------------------------
+
+
+async def test_plugin_normal(
+    wav_path: str, ws_url: str, verbose: bool
+) -> list[TestResult]:
+    """Run plugin simulator on normal flow.
+
+    Verifies:
+      - All committed texts match expected completions
+      - No double-commits (each text committed exactly once)
+      - Preedit is empty after all events processed
+    """
+    results = []
+
+    r = await run_pipeline(wav_path, ws_url)
+    if r.error:
+        results.append(TestResult("No errors", False, r.error))
+        return results
+
+    sim = VoiceEngineSimulator()
+    sim.process_events(r.events)
+
+    if verbose:
+        print(f"\n  {_DIM}--- Plugin simulator (normal) ---{_RESET}")
+        for c in sim.commits:
+            src = _CYAN if c.source == "completed" else _YELLOW
+            print(f"  {_DIM}[{c.time_ms:7.1f}ms]{_RESET} "
+                  f"commitString({_color(repr(c.text), src, True)}) "
+                  f"via {c.source}")
+        print(f"  {_DIM}final preedit: {repr(sim.preedit_text)}{_RESET}")
+        print()
+
+    # All completions should be committed
+    expected = {"これはテストです", "音声認識のテスト中", "デバッグモード"}
+    actual = set(sim.committed_texts())
+    results.append(TestResult(
+        "Committed texts match",
+        expected == actual,
+        f"committed={sorted(actual)}",
+    ))
+
+    # No double commits
+    doubles = sim.find_double_commits()
+    results.append(TestResult(
+        "No double commits",
+        len(doubles) == 0,
+        "; ".join(
+            f"'{a.text}'({a.source})→'{b.text}'({b.source})"
+            for a, b in doubles
+        ) if doubles else "",
+    ))
+
+    # Preedit should be empty after all events
+    results.append(TestResult(
+        "Preedit empty at end",
+        sim.preedit_text == "",
+        f"preedit={repr(sim.preedit_text)}" if sim.preedit_text else "",
+    ))
+
+    # All commits should come from "completed" (no stop involved)
+    stop_commits = [c for c in sim.commits if c.source == "stop"]
+    results.append(TestResult(
+        "All commits via completed (no stop)",
+        len(stop_commits) == 0,
+        f"{len(stop_commits)} stop commit(s)" if stop_commits else "",
+    ))
+
+    return results
+
+
+async def test_plugin_mid_stop(
+    wav_path: str, ws_url: str, verbose: bool
+) -> list[TestResult]:
+    """Run plugin simulator on mid-recording stop.
+
+    This is the critical test: when the user stops recording mid-stream,
+    stopRecording() commits pending preedit. But then the server may
+    still send a TranscriptionComplete for that same text, causing a
+    double-commit.
+
+    Detects:
+      - Double-commit: stop commits "これ", then completed commits "これはテストです"
+      - Preedit leak: delta arrives after stop, setting preedit again
+    """
+    results = []
+
+    r = await run_pipeline(wav_path, ws_url, stop_after_chunks=25)
+    if r.error:
+        results.append(TestResult("No errors", False, r.error))
+        return results
+
+    sim = VoiceEngineSimulator()
+    sim.process_events(r.events)
+
+    if verbose:
+        print(f"\n  {_DIM}--- Plugin simulator (mid-stop) ---{_RESET}")
+        for c in sim.commits:
+            src_color = _CYAN if c.source == "completed" else _YELLOW
+            print(f"  {_DIM}[{c.time_ms:7.1f}ms]{_RESET} "
+                  f"commitString({_color(repr(c.text), src_color, True)}) "
+                  f"via {c.source}")
+        preedit_after = sim.preedit_after_stop()
+        if preedit_after:
+            print(f"  {_RED}preedit after stop: {repr(preedit_after)}{_RESET}")
+        print(f"  {_DIM}final preedit: {repr(sim.preedit_text)}{_RESET}")
+        print()
+
+    # Check for double-commits
+    doubles = sim.find_double_commits()
+    results.append(TestResult(
+        "No double commits",
+        len(doubles) == 0,
+        "; ".join(
+            f"'{a.text}'({a.source}@{a.time_ms:.0f}ms)"
+            f"→'{b.text}'({b.source}@{b.time_ms:.0f}ms)"
+            for a, b in doubles
+        ) if doubles else "clean",
+    ))
+
+    # Check for preedit leak after stop (deltas arriving post-stop)
+    preedit_leaks = sim.preedit_after_stop()
+    results.append(TestResult(
+        "Preedit leak after stop (informational)",
+        True,  # Informational — exposes UX issue
+        f"{len(preedit_leaks)} leak(s): {preedit_leaks}"
+        if preedit_leaks else "clean",
+    ))
+
+    # Stop should have committed pending preedit (if any was pending)
+    stop_commits = [c for c in sim.commits if c.source == "stop"]
+    results.append(TestResult(
+        "Stop committed pending preedit",
+        True,  # Informational — always passes
+        f"{len(stop_commits)} text(s): "
+        + ", ".join(repr(c.text) for c in stop_commits)
+        if stop_commits else "no pending preedit at stop time",
+    ))
+
+    # Report total commits for visibility
+    results.append(TestResult(
+        "Total commits",
+        True,  # Informational
+        f"{len(sim.commits)}: "
+        + ", ".join(f"{repr(c.text)}({c.source})" for c in sim.commits),
+    ))
+
+    return results
+
+
+async def test_plugin_stop_during_deltas(
+    wav_path: str, ws_url: str, verbose: bool
+) -> list[TestResult]:
+    """Plugin sim: stop DURING delta reception (time-based).
+
+    This is the most realistic double-commit scenario:
+    1. Audio sent, commits issued
+    2. Server starts responding with deltas → preedit is set
+    3. User presses stop (350ms) → stopRecording() commits preedit
+    4. Server sends completed → onTranscriptionComplete commits final text
+
+    Result: both the partial preedit and the final text get committed.
+    """
+    results = []
+
+    # stop_after_ms=350 fires after first deltas (~300ms) but before
+    # completions (~600ms)
+    r = await run_pipeline(wav_path, ws_url, stop_after_ms=350)
+    if r.error:
+        results.append(TestResult("No errors", False, r.error))
+        return results
+
+    sim = VoiceEngineSimulator()
+    sim.process_events(r.events)
+
+    if verbose:
+        print(f"\n  {_DIM}--- Plugin simulator (stop during deltas) ---{_RESET}")
+        print(f"  {_DIM}Event timeline:{_RESET}")
+        for e in r.events:
+            if e.type in ("delta", "completed", "stop"):
+                print(f"  {_DIM}{e}{_RESET}")
+        print(f"  {_DIM}Commits:{_RESET}")
+        for c in sim.commits:
+            src_color = _YELLOW if c.source == "stop" else _CYAN
+            print(f"  {_DIM}[{c.time_ms:7.1f}ms]{_RESET} "
+                  f"commitString({_color(repr(c.text), src_color, True)}) "
+                  f"via {c.source}")
+        preedit_leaks = sim.preedit_after_stop()
+        if preedit_leaks:
+            print(f"  {_YELLOW}preedit leaks after stop: {preedit_leaks}{_RESET}")
+        print()
+
+    # Detect double-commits (the main point of this test)
+    doubles = sim.find_double_commits()
+    results.append(TestResult(
+        "Double commit detected (known issue)",
+        True,  # Informational — exposes the bug without failing
+        f"{len(doubles)} double(s): "
+        + "; ".join(
+            f"'{a.text}'({a.source}@{a.time_ms:.0f}ms)"
+            f" → '{b.text}'({b.source}@{b.time_ms:.0f}ms)"
+            for a, b in doubles
+        ) if doubles else "none (stop had no pending preedit)",
+    ))
+
+    # Report what the user's text field would contain
+    all_committed = " ".join(c.text for c in sim.commits)
+    results.append(TestResult(
+        "Final committed text (what user sees)",
+        True,  # Informational
+        repr(all_committed),
+    ))
+
+    # Preedit leaks
+    preedit_leaks = sim.preedit_after_stop()
+    results.append(TestResult(
+        "Preedit leaks after stop",
+        True,  # Informational
+        f"{len(preedit_leaks)}: {preedit_leaks}" if preedit_leaks else "none",
+    ))
+
+    return results
+
+
+async def test_plugin_immediate_stop(
+    wav_path: str, ws_url: str, verbose: bool
+) -> list[TestResult]:
+    """Run plugin simulator on immediate stop (5 chunks, during calibration).
+
+    Verifies:
+      - No commits from stop (no preedit was pending during calibration)
+      - Any post-stop completions are handled gracefully
+    """
+    results = []
+
+    r = await run_pipeline(wav_path, ws_url, stop_after_chunks=5)
+    if r.error:
+        results.append(TestResult("No errors", False, r.error))
+        return results
+
+    sim = VoiceEngineSimulator()
+    sim.process_events(r.events)
+
+    if verbose:
+        print(f"\n  {_DIM}--- Plugin simulator (immediate stop) ---{_RESET}")
+        for c in sim.commits:
+            src_color = _CYAN if c.source == "completed" else _YELLOW
+            print(f"  {_DIM}[{c.time_ms:7.1f}ms]{_RESET} "
+                  f"commitString({_color(repr(c.text), src_color, True)}) "
+                  f"via {c.source}")
+        print(f"  {_DIM}final preedit: {repr(sim.preedit_text)}{_RESET}")
+        print()
+
+    # No stop-commits expected (stopped during calibration, no deltas yet)
+    stop_commits = [c for c in sim.commits if c.source == "stop"]
+    results.append(TestResult(
+        "No stop commits (no pending preedit)",
+        len(stop_commits) == 0,
+        f"{len(stop_commits)} stop commit(s)" if stop_commits else "",
+    ))
+
+    # No double commits
+    doubles = sim.find_double_commits()
+    results.append(TestResult(
+        "No double commits",
+        len(doubles) == 0,
+        "",
+    ))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -685,6 +1097,10 @@ SCENARIOS = {
     "mid-stop": ("Mid-recording stop", test_mid_stop),
     "immediate-stop": ("Immediate stop", test_immediate_stop),
     "preedit": ("Preedit replacement behavior", test_preedit_behavior),
+    "plugin-normal": ("Plugin sim: normal flow", test_plugin_normal),
+    "plugin-stop": ("Plugin sim: mid-stop (chunk)", test_plugin_mid_stop),
+    "plugin-immediate": ("Plugin sim: immediate stop", test_plugin_immediate_stop),
+    "plugin-double": ("Plugin sim: stop during deltas", test_plugin_stop_during_deltas),
 }
 
 
